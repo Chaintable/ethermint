@@ -2,13 +2,16 @@ package tracer
 
 import (
 	"fmt"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"math/big"
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	dtypes "github.com/zeta-chain/ethermint/debank/types"
+	"github.com/zeta-chain/ethermint/x/evm/statedb"
 	"github.com/zeta-chain/ethermint/x/evm/types"
 )
 
@@ -28,6 +31,48 @@ func BuildPipelineBlock(rawBlock *ethtypes.Block) dtypes.Block {
 		block.BaseFeePerGas = rawBlock.Header().BaseFee
 	}
 	return block
+}
+
+func BuildPipelineTransaction(
+	ctx sdk.Context,
+	cfg *statedb.EVMConfig,
+	tx *ethtypes.Transaction,
+	txConfig statedb.TxConfig,
+	from common.Address,
+	gasUsed *big.Int,
+	success bool,
+) dtypes.Transaction {
+	gasPrice := big.NewInt(0)
+	if !cfg.ChainConfig.IsLondon(big.NewInt(ctx.BlockHeight())) {
+		gasPrice = tx.GasPrice()
+	} else {
+		effectiveGasTip, _ := tx.EffectiveGasTip(cfg.BaseFee)
+		gasPrice = new(big.Int).Add(cfg.BaseFee, effectiveGasTip)
+	}
+	if gasPrice.Cmp(big.NewInt(0)) == 0 {
+		gasPrice = tx.GasPrice()
+	}
+	transaction := dtypes.Transaction{
+		ID:               tx.Hash().Hex(),
+		From:             strings.ToLower(from.Hex()),
+		To:               strings.ToLower(tx.To().Hex()),
+		Gas:              big.NewInt(int64(tx.Gas())),
+		GasPrice:         gasPrice,
+		GasUsed:          gasUsed,
+		Status:           success,
+		GasFeeCap:        common.Big0,
+		GasTipCap:        common.Big0,
+		Input:            tx.Data(),
+		Nonce:            big.NewInt(int64(tx.Nonce())),
+		TransactionIndex: int64(txConfig.TxIndex),
+		Value:            (*hexutil.Big)(tx.Value()),
+	}
+	switch tx.Type() {
+	case ethtypes.DynamicFeeTxType | ethtypes.BlobTxType:
+		transaction.GasFeeCap = tx.GasFeeCap()
+		transaction.GasTipCap = tx.GasTipCap()
+	}
+	return transaction
 }
 
 func BuildPipelineWithdrawals(rawBlock *ethtypes.Block) []dtypes.SpecialTransfer {
