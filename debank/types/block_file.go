@@ -9,11 +9,10 @@ import (
 )
 
 type BlockFile struct {
-	Block            Block             `json:"block"`
-	Txs              []Transaction     `json:"txs"`
-	Events           []Event           `json:"events"`
-	Traces           []Trace           `json:"traces"`
-	SpecialTransfers []SpecialTransfer `json:"special_transfers"`
+	Block  Block         `json:"block"`
+	Txs    []Transaction `json:"txs"`
+	Events []Event       `json:"events"`
+	Traces []Trace       `json:"traces"`
 }
 
 func (bf *BlockFile) Validation() BlockValidation {
@@ -29,9 +28,6 @@ func (bf *BlockFile) Validation() BlockValidation {
 	}
 	for _, trace := range bf.Traces {
 		ids = append(ids, trace.ID)
-	}
-	for _, withdrawal := range bf.SpecialTransfers {
-		ids = append(ids, withdrawal.ID)
 	}
 
 	return BlockValidation{ValidationHash: CalcValidationHash(ids), IsFork: false}

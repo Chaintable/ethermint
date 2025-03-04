@@ -2,11 +2,11 @@ package tracer
 
 import (
 	"fmt"
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"math/big"
 	"strings"
 	"time"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -73,24 +73,6 @@ func BuildPipelineTransaction(
 		transaction.GasTipCap = tx.GasTipCap()
 	}
 	return transaction
-}
-
-func BuildPipelineWithdrawals(rawBlock *ethtypes.Block) []dtypes.SpecialTransfer {
-	//TODO try to fix it in cosmos
-	res := make([]dtypes.SpecialTransfer, 0)
-	for _, withdrawal := range rawBlock.Withdrawals() {
-		specialTransfer := dtypes.SpecialTransfer{
-			FromAddress: strings.ToLower("0x00000000219ab540356cBB839Cbe05303d7705Fa"), //eth2 合约
-			ToAddress:   strings.ToLower(withdrawal.Address.Hex()),
-			Value:       (*hexutil.Big)(big.NewInt(int64(withdrawal.Amount))),
-			Memo:        "beacon_withdrawl",
-			Idx:         big.NewInt(int64(withdrawal.Index)),
-		}
-		specialTransfer.ID = dtypes.ToHash([]string{rawBlock.Hash().Hex(), specialTransfer.ToAddress, fmt.Sprintf("%d", withdrawal.Index)})
-		res = append(res, specialTransfer)
-	}
-
-	return res
 }
 
 func BuildPilelineBlockHeader(header *ethtypes.Header) *dtypes.Header {
