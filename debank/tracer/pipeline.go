@@ -139,8 +139,8 @@ func BuildPipelineTxEvents(logs []*types.Log, txHash common.Hash) []dtypes.Event
 	return events
 }
 
-func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtypes.TransactionStateDiff) dtypes.BlockStorageDiff {
-	storageDiff := dtypes.BlockStorageDiff{
+func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtypes.TransactionStateDiff) dtypes.BlockStateDiff {
+	storageDiff := dtypes.BlockStateDiff{
 		Hash:       root,
 		ParentHash: parentRoot,
 	}

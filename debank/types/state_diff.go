@@ -36,7 +36,7 @@ type AccountStorageDiff struct {
 	Values  []IndexValuePair
 }
 
-type BlockStorageDiff struct {
+type BlockStateDiff struct {
 	Hash            common.Hash
 	ParentHash      common.Hash
 	NewAccounts     []NewAccount
