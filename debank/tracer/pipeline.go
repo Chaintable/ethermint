@@ -133,7 +133,7 @@ func BuildPilelineBlockHeader(header *ethtypes.Header) *dtypes.Header {
 	return &blockHeader
 }
 
-func BuildPipelineTxEvents(logs []*types.Log) []dtypes.Event {
+func BuildPipelineTxEvents(logs []*types.Log, txHash common.Hash) []dtypes.Event {
 	events := make([]dtypes.Event, 0, len(logs))
 
 	for i, log := range logs {
@@ -144,13 +144,14 @@ func BuildPipelineTxEvents(logs []*types.Log) []dtypes.Event {
 			selector = log.Topics[0]
 			remainingTopics = log.Topics[1:]
 		}
-		//TODO how to fix id
 		events = append(events, dtypes.Event{
-			Address:  strings.ToLower(log.Address),
-			Selector: selector,
-			Topics:   remainingTopics,
-			Data:     log.Data,
-			Position: int64(i),
+			Address:       strings.ToLower(log.Address),
+			Selector:      selector,
+			Topics:        remainingTopics,
+			Data:          log.Data,
+			Position:      int64(i),
+			ParentTraceID: txHash.Hex(),
+			ID:            dtypes.ToHash([]string{txHash.Hex(), fmt.Sprintf("%d", i)}),
 		})
 	}
 	return events
