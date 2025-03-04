@@ -7,6 +7,13 @@ import (
 	"github.com/holiman/uint256"
 )
 
+type TransactionStateDiff struct {
+	NewAccounts     []NewAccount
+	DeletedAccounts []common.Hash
+	StorageDiff     []AccountStorageDiff
+	NewCodes        []NewCode
+}
+
 type NewAccount struct {
 	Address  common.Hash
 	Balance  *uint256.Int

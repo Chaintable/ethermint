@@ -625,6 +625,9 @@ func (k *Keeper) traceTx(
 		}
 	}()
 
+	if traceConfig.Tracer == dtracer.Name {
+		cfg.StateDb = statedb.New(ctx, k, txConfig)
+	}
 	res, err := k.ApplyMessageWithConfig(ctx, msg, tracer, commitMessage, cfg, txConfig)
 	if err != nil {
 		return nil, 0, status.Error(codes.Internal, err.Error())
@@ -642,6 +645,7 @@ func (k *Keeper) traceTx(
 		}
 		traceRes.Transaction = dtracer.BuildPipelineTransaction(ctx, cfg, tx, txConfig, from, big.NewInt(int64(res.GasUsed)), len(res.VmError) != 0)
 		traceRes.Events = dtracer.BuildPipelineTxEvents(res.Logs, tx.Hash())
+		traceRes.StateDiff = cfg.StateDb.ToStorageDiff()
 		result, _ = json.Marshal(traceRes)
 	}
 

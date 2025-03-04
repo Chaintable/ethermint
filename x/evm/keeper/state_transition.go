@@ -355,7 +355,12 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 		return nil, errorsmod.Wrap(types.ErrCallDisabled, "failed to call contract")
 	}
 
-	stateDB := statedb.New(ctx, k, txConfig)
+	var stateDB *statedb.StateDB
+	if cfg.StateDb != nil {
+		stateDB = cfg.StateDb
+	} else {
+		stateDB = statedb.New(ctx, k, txConfig)
+	}
 	evm := k.NewEVM(ctx, msg, cfg, tracer, stateDB)
 
 	leftoverGas := msg.GasLimit

@@ -138,3 +138,29 @@ func BuildPipelineTxEvents(logs []*types.Log, txHash common.Hash) []dtypes.Event
 	}
 	return events
 }
+
+func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtypes.TransactionStateDiff) dtypes.BlockStorageDiff {
+	storageDiff := dtypes.BlockStorageDiff{
+		Hash:       root,
+		ParentHash: parentRoot,
+	}
+	accountStorageDiffMap := make(map[common.Hash]dtypes.AccountStorageDiff)
+	for _, diff := range diffs {
+		for _, newCode := range diff.NewCodes {
+			storageDiff.NewCodes = append(storageDiff.NewCodes, newCode)
+		}
+		for _, newAccount := range diff.NewAccounts {
+			storageDiff.NewAccounts = append(storageDiff.NewAccounts, newAccount)
+		}
+		for _, deletedAccount := range diff.DeletedAccounts {
+			storageDiff.DeletedAccounts = append(storageDiff.DeletedAccounts, deletedAccount)
+		}
+		for _, accountStorageDiff := range diff.StorageDiff {
+			accountStorageDiffMap[accountStorageDiff.Address] = accountStorageDiff
+		}
+	}
+	for _, diff := range accountStorageDiffMap {
+		storageDiff.StorageDiff = append(storageDiff.StorageDiff, diff)
+	}
+	return storageDiff
+}
