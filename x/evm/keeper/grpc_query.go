@@ -640,7 +640,7 @@ func (k *Keeper) traceTx(
 	}
 	if traceConfig.Tracer == dtracer.Name {
 		var traceRes dtypes.TraceResult
-		if err = json.Unmarshal(result.([]byte), &traceRes); err != nil {
+		if err = json.Unmarshal(result.(json.RawMessage), &traceRes); err != nil {
 			return nil, 0, status.Error(codes.Internal, err.Error())
 		}
 		traceRes.Transaction = dtracer.BuildPipelineTransaction(ctx, cfg, tx, txConfig, from, big.NewInt(int64(res.GasUsed)), len(res.VmError) != 0)
