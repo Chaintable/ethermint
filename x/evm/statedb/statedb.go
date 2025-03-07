@@ -17,7 +17,6 @@ package statedb
 
 import (
 	"fmt"
-	"github.com/ethereum/go-ethereum/rlp"
 	"sort"
 
 	errorsmod "cosmossdk.io/errors"
@@ -685,11 +684,7 @@ func (s *StateDB) ToStorageDiff() dtypes.TransactionStateDiff {
 		for index, v := range storage {
 			value := uint256.NewInt(0)
 			if len(v) > 0 {
-				_, content, _, err := rlp.Split(v)
-				if err != nil {
-					s.ctx.Logger().Error("Failed to split storage", "err", err)
-				}
-				value = uint256.NewInt(0).SetBytes(content)
+				value = uint256.NewInt(0).SetBytes(v)
 			}
 			values = append(values, dtypes.IndexValuePair{
 				Index: index,
