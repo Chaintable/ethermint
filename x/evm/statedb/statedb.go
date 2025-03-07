@@ -607,6 +607,8 @@ func (s *StateDB) Commit() error {
 			if err := s.keeper.DeleteAccount(s.ctx, obj.Address()); err != nil {
 				return errorsmod.Wrap(err, "failed to delete account")
 			}
+			addrhash := crypto.Keccak256Hash(obj.Address().Bytes())
+			s.DeletedAccounts[addrhash] = struct{}{}
 		} else {
 			if obj.code != nil && obj.dirtyCode {
 				s.keeper.SetCode(s.ctx, obj.CodeHash(), obj.code)
@@ -616,7 +618,7 @@ func (s *StateDB) Commit() error {
 				return errorsmod.Wrap(err, "failed to set account")
 			}
 			{
-				addrhash := crypto.Keccak256Hash(obj.address.Bytes())
+				addrhash := crypto.Keccak256Hash(obj.Address().Bytes())
 				s.NewAccounts[addrhash] = obj.account
 			}
 
