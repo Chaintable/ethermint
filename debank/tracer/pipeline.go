@@ -72,7 +72,7 @@ func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 		StateRoot:        common.BytesToHash(header["stateRoot"].(hexutil.Bytes)),
 		Miner:            header["miner"].(common.Address),
 		Difficulty:       header["difficulty"].(*hexutil.Big),
-		ExtraData:        hexutil.Bytes(header["extraData"].(string)),
+		ExtraData:        hexutil.Bytes{},
 		GasLimit:         header["gasLimit"].(hexutil.Uint64),
 		GasUsed:          hexutil.Uint64((*big.Int)(header["gasUsed"].(*hexutil.Big)).Uint64()),
 		Timestamp:        header["timestamp"].(hexutil.Uint64),
