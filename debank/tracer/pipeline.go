@@ -60,43 +60,28 @@ func BuildPipelineTransaction(
 	return transaction
 }
 
-func BuildPilelineBlockHeader(header *ethtypes.Header) *dtypes.Header {
+func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	blockHeader := dtypes.Header{
-		Number:           (*hexutil.Big)(header.Number),
-		Hash:             header.Hash(),
-		ParentHash:       header.ParentHash,
-		Nonce:            header.Nonce,
-		MixHash:          header.MixDigest,
-		Sha3Uncles:       header.UncleHash,
-		LogsBloom:        header.Bloom,
-		StateRoot:        header.Root,
-		Miner:            header.Coinbase,
-		Difficulty:       (*hexutil.Big)(header.Difficulty),
-		ExtraData:        hexutil.Bytes(header.Extra),
-		GasLimit:         hexutil.Uint64(header.GasLimit),
-		GasUsed:          hexutil.Uint64(header.GasUsed),
-		Timestamp:        hexutil.Uint64(header.Time),
-		TransactionsRoot: header.TxHash,
-		ReceiptsRoot:     header.ReceiptHash,
+		Number:           (*hexutil.Big)(big.NewInt(int64(header["number"].(hexutil.Uint64)))),
+		Hash:             common.BytesToHash(header["hash"].(hexutil.Bytes)),
+		ParentHash:       header["parentHash"].(common.Hash),
+		Nonce:            header["nonce"].(ethtypes.BlockNonce),
+		MixHash:          header["mixHash"].(common.Hash),
+		Sha3Uncles:       header["sha3Uncles"].(common.Hash),
+		LogsBloom:        header["logsBloom"].(ethtypes.Bloom),
+		StateRoot:        common.BytesToHash(header["stateRoot"].(hexutil.Bytes)),
+		Miner:            header["miner"].(common.Address),
+		Difficulty:       header["difficulty"].(*hexutil.Big),
+		ExtraData:        hexutil.Bytes(header["extraData"].(string)),
+		GasLimit:         header["gasLimit"].(hexutil.Uint64),
+		GasUsed:          hexutil.Uint64((*big.Int)(header["gasUsed"].(*hexutil.Big)).Uint64()),
+		Timestamp:        header["timestamp"].(hexutil.Uint64),
+		TransactionsRoot: header["transactionsRoot"].(common.Hash),
+		ReceiptsRoot:     header["receiptsRoot"].(common.Hash),
 	}
-	if header.BaseFee != nil {
-		blockHeader.BaseFeePerGas = (*hexutil.Big)(header.BaseFee)
+	if baseFeePerGas, ok := header["baseFeePerGas"]; ok {
+		blockHeader.BaseFeePerGas = baseFeePerGas.(*hexutil.Big)
 	}
-	if header.WithdrawalsHash != nil {
-		blockHeader.WithdrawalsRoot = header.WithdrawalsHash
-	}
-	if header.BlobGasUsed != nil {
-		blockHeader.BlobGasUsed = (*hexutil.Uint64)(header.BlobGasUsed)
-	}
-	if header.ExcessBlobGas != nil {
-		blockHeader.ExcessBlobGas = (*hexutil.Uint64)(header.ExcessBlobGas)
-	}
-	if header.ParentBeaconRoot != nil {
-		blockHeader.ParentBeaconBlockRoot = header.ParentBeaconRoot
-	}
-	//if header.RequestsHash != nil {
-	//	blockHeader.RequestsRoot = header.RequestsHash
-	//}
 	return &blockHeader
 }
 
