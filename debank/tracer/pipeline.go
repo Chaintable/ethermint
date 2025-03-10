@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -15,49 +14,35 @@ import (
 	"github.com/zeta-chain/ethermint/x/evm/types"
 )
 
-func BuildPipelineBlock(rawBlock *ethtypes.Block) dtypes.Block {
+func BuildPipelineBlock(rawBlock map[string]interface{}) dtypes.Block {
 	block := dtypes.Block{
-		ID:                    rawBlock.Hash().Hex(),
-		Height:                rawBlock.Number(),
-		ParentID:              rawBlock.ParentHash().Hex(),
+		ID:                    rawBlock["hash"].(hexutil.Bytes).String(),
+		Height:                big.NewInt(int64(rawBlock["number"].(hexutil.Uint64))),
+		ParentID:              rawBlock["parentHash"].(common.Hash).Hex(),
 		BaseFeePerGas:         big.NewInt(0),
-		Miner:                 strings.ToLower(rawBlock.Coinbase().Hex()),
-		GasLimit:              big.NewInt(int64(rawBlock.GasLimit())),
-		GasUsed:               big.NewInt(int64(rawBlock.GasUsed())),
-		Timestamp:             rawBlock.Time(),
+		Miner:                 strings.ToLower(rawBlock["miner"].(common.Address).Hex()),
+		GasLimit:              big.NewInt(int64(rawBlock["gasLimit"].(hexutil.Uint64))),
+		GasUsed:               (*big.Int)(rawBlock["gasUsed"].(*hexutil.Big)),
+		Timestamp:             uint64(rawBlock["timestamp"].(hexutil.Uint64)),
 		ProcessStartTimestamp: time.Now().UnixMilli(),
 	}
-	if rawBlock.Header().BaseFee != nil {
-		block.BaseFeePerGas = rawBlock.Header().BaseFee
+	if baseFeePerGas, ok := rawBlock["baseFeePerGas"]; ok {
+		block.BaseFeePerGas = (*big.Int)(baseFeePerGas.(*hexutil.Big))
 	}
 	return block
 }
 
 func BuildPipelineTransaction(
-	ctx sdk.Context,
-	cfg *statedb.EVMConfig,
 	tx *ethtypes.Transaction,
 	txConfig statedb.TxConfig,
 	from common.Address,
 	gasUsed *big.Int,
 	success bool,
 ) dtypes.Transaction {
-	gasPrice := big.NewInt(0)
-	if !cfg.ChainConfig.IsLondon(big.NewInt(ctx.BlockHeight())) {
-		gasPrice = tx.GasPrice()
-	} else {
-		effectiveGasTip, _ := tx.EffectiveGasTip(cfg.BaseFee)
-		gasPrice = new(big.Int).Add(cfg.BaseFee, effectiveGasTip)
-	}
-	if gasPrice.Cmp(big.NewInt(0)) == 0 {
-		gasPrice = tx.GasPrice()
-	}
 	transaction := dtypes.Transaction{
-		ID:               tx.Hash().Hex(),
 		From:             strings.ToLower(from.Hex()),
 		To:               strings.ToLower(tx.To().Hex()),
 		Gas:              big.NewInt(int64(tx.Gas())),
-		GasPrice:         gasPrice,
 		GasUsed:          gasUsed,
 		Status:           success,
 		GasFeeCap:        common.Big0,

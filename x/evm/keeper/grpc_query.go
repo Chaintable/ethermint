@@ -643,7 +643,8 @@ func (k *Keeper) traceTx(
 		if err = json.Unmarshal(result.(json.RawMessage), &traceRes); err != nil {
 			return nil, 0, status.Error(codes.Internal, err.Error())
 		}
-		traceRes.Transaction = dtracer.BuildPipelineTransaction(ctx, cfg, tx, txConfig, from, big.NewInt(int64(res.GasUsed)), len(res.VmError) != 0)
+		traceRes.Transaction = dtracer.BuildPipelineTransaction(tx, txConfig, from, big.NewInt(int64(res.GasUsed)), len(res.VmError) != 0)
+		ctx.Logger().Info("Exec transaction", "vm_error", res.VmError)
 		traceRes.Events = dtracer.BuildPipelineTxEvents(res.Logs, tx.Hash())
 		traceRes.StateDiff = cfg.StateDb.ToStorageDiff()
 		result, _ = json.Marshal(traceRes)
