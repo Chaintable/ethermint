@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"runtime"
 
 	sdkmath "cosmossdk.io/math"
 
@@ -343,6 +344,13 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 	cfg *statedb.EVMConfig,
 	txConfig statedb.TxConfig,
 ) (*types.MsgEthereumTxResponse, error) {
+	defer func() {
+		if err := recover(); err != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			fmt.Printf("panic: %v\nstack trace:\n%s", err, string(buf[:n]))
+		}
+	}()
 	var (
 		ret   []byte // return bytes from evm execution
 		vmErr error  // vm errors do not effect consensus and are therefore not assigned to err
