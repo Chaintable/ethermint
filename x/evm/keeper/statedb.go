@@ -138,7 +138,7 @@ func (k *Keeper) SetAccount(ctx sdk.Context, addr common.Address, account stated
 			return err
 		}
 	}
-	fmt.Printf("account: %+v\n", acct)
+	fmt.Printf("source account: %+v, target account: %+v\n", account, acct)
 	k.accountKeeper.SetAccount(ctx, acct)
 
 	if err := k.SetBalance(ctx, addr, account.Balance.ToBig()); err != nil {
