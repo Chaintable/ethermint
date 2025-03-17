@@ -348,7 +348,7 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 		if err := recover(); err != nil {
 			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)
-			fmt.Printf("panic: %v\nstack trace:\n%s", err, string(buf[:n]))
+			fmt.Printf("panic: %v\nstack trace:\n%s\n", err, string(buf[:n]))
 		}
 	}()
 	var (
