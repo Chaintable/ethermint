@@ -600,6 +600,7 @@ func (k *Keeper) traceTx(
 	}
 
 	if traceConfig.Tracer == dtracer.Name {
+		ctx.Logger().Info("traceTx", "txHash", txConfig.TxHash.Hex())
 		tracer = dtracer.NewCallTracer(ctx, txConfig.TxHash.Hex())
 	} else if traceConfig.Tracer != "" {
 		if tracer, err = tracers.DefaultDirectory.New(traceConfig.Tracer, tCtx, tracerJSONConfig); err != nil {
