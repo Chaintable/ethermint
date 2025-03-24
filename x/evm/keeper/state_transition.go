@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"runtime"
 
 	sdkmath "cosmossdk.io/math"
 
@@ -343,6 +344,13 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 	cfg *statedb.EVMConfig,
 	txConfig statedb.TxConfig,
 ) (*types.MsgEthereumTxResponse, error) {
+	defer func() {
+		if err := recover(); err != nil {
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			fmt.Printf("panic: %v\nstack trace:\n%s\n", err, string(buf[:n]))
+		}
+	}()
 	var (
 		ret   []byte // return bytes from evm execution
 		vmErr error  // vm errors do not effect consensus and are therefore not assigned to err
@@ -355,7 +363,12 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 		return nil, errorsmod.Wrap(types.ErrCallDisabled, "failed to call contract")
 	}
 
-	stateDB := statedb.New(ctx, k, txConfig)
+	var stateDB *statedb.StateDB
+	if cfg.StateDb != nil {
+		stateDB = cfg.StateDb
+	} else {
+		stateDB = statedb.New(ctx, k, txConfig)
+	}
 	evm := k.NewEVM(ctx, msg, cfg, tracer, stateDB)
 
 	leftoverGas := msg.GasLimit

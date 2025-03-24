@@ -39,6 +39,8 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	ethparams "github.com/ethereum/go-ethereum/params"
+	dtracer "github.com/zeta-chain/ethermint/debank/tracer"
+	dtypes "github.com/zeta-chain/ethermint/debank/types"
 
 	ethermint "github.com/zeta-chain/ethermint/types"
 	"github.com/zeta-chain/ethermint/x/evm/statedb"
@@ -597,7 +599,9 @@ func (k *Keeper) traceTx(
 		TxHash:  txConfig.TxHash,
 	}
 
-	if traceConfig.Tracer != "" {
+	if traceConfig.Tracer == dtracer.Name {
+		tracer = dtracer.NewCallTracer(ctx, txConfig.TxHash.Hex())
+	} else if traceConfig.Tracer != "" {
 		if tracer, err = tracers.DefaultDirectory.New(traceConfig.Tracer, tCtx, tracerJSONConfig); err != nil {
 			return nil, 0, status.Error(codes.Internal, err.Error())
 		}
@@ -621,6 +625,9 @@ func (k *Keeper) traceTx(
 		}
 	}()
 
+	if traceConfig.Tracer == dtracer.Name {
+		cfg.StateDb = statedb.New(ctx, k, txConfig)
+	}
 	res, err := k.ApplyMessageWithConfig(ctx, msg, tracer, commitMessage, cfg, txConfig)
 	if err != nil {
 		return nil, 0, status.Error(codes.Internal, err.Error())
@@ -630,6 +637,16 @@ func (k *Keeper) traceTx(
 	result, err = tracer.GetResult()
 	if err != nil {
 		return nil, 0, status.Error(codes.Internal, err.Error())
+	}
+	if traceConfig.Tracer == dtracer.Name {
+		var traceRes dtypes.TraceResult
+		if err = json.Unmarshal(result.(json.RawMessage), &traceRes); err != nil {
+			return nil, 0, status.Error(codes.Internal, err.Error())
+		}
+		traceRes.Transaction = dtracer.BuildPipelineTransaction(tx, txConfig, from, big.NewInt(int64(res.GasUsed)), len(res.VmError) == 0)
+		traceRes.Events = dtracer.BuildPipelineTxEvents(res.Logs, tx.Hash())
+		traceRes.StateDiff = cfg.StateDb.ToStorageDiff()
+		result, _ = json.Marshal(traceRes)
 	}
 
 	return &result, txConfig.LogIndex + uint(len(res.Logs)), nil

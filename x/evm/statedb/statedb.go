@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
+	dtypes "github.com/zeta-chain/ethermint/debank/types"
 
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/zeta-chain/ethermint/store/cachemulti"
@@ -82,6 +83,12 @@ type StateDB struct {
 
 	// events emitted by native action
 	nativeEvents sdk.Events
+
+	// to get state diff
+	DeletedAccounts map[common.Hash]struct{}
+	NewAccounts     map[common.Hash]Account
+	StorageDiff     map[common.Hash]map[common.Hash][]byte
+	NewCodes        map[common.Hash][]byte // The mutated contract code
 }
 
 // New creates a new state from a given trie.
@@ -103,6 +110,11 @@ func NewWithParams(ctx sdk.Context, keeper Keeper, txConfig TxConfig, _ evmtypes
 	}
 	db.ctx = ctx.WithValue(StateDBContextKey, db)
 	db.cacheCtx = db.ctx.WithMultiStore(cachemulti.NewStore(ctx.MultiStore(), keeper.StoreKeys()))
+
+	db.DeletedAccounts = make(map[common.Hash]struct{})
+	db.NewAccounts = make(map[common.Hash]Account)
+	db.StorageDiff = make(map[common.Hash]map[common.Hash][]byte)
+	db.NewCodes = make(map[common.Hash][]byte)
 	return db
 }
 
@@ -594,13 +606,21 @@ func (s *StateDB) Commit() error {
 			if err := s.keeper.DeleteAccount(s.ctx, obj.Address()); err != nil {
 				return errorsmod.Wrap(err, "failed to delete account")
 			}
+			addrhash := crypto.Keccak256Hash(obj.Address().Bytes())
+			s.DeletedAccounts[addrhash] = struct{}{}
 		} else {
 			if obj.code != nil && obj.dirtyCode {
 				s.keeper.SetCode(s.ctx, obj.CodeHash(), obj.code)
+				s.NewCodes[crypto.Keccak256Hash(obj.CodeHash())] = obj.code
 			}
 			if err := s.keeper.SetAccount(s.ctx, obj.Address(), obj.account); err != nil {
 				return errorsmod.Wrap(err, "failed to set account")
 			}
+			{
+				addrhash := crypto.Keccak256Hash(obj.Address().Bytes())
+				s.NewAccounts[addrhash] = obj.account
+			}
+
 			for _, key := range obj.dirtyStorage.SortedKeys() {
 				value := obj.dirtyStorage[key]
 				// Skip noop changes, persist actual changes
@@ -608,6 +628,14 @@ func (s *StateDB) Commit() error {
 					continue
 				}
 				s.keeper.SetState(s.ctx, obj.Address(), key, value.Bytes())
+				{
+					addrhash := crypto.Keccak256Hash(obj.Address().Bytes())
+					if _, ok := s.StorageDiff[addrhash]; !ok {
+						s.StorageDiff[addrhash] = make(map[common.Hash][]byte)
+					}
+					storageDiff := s.StorageDiff[addrhash]
+					storageDiff[crypto.Keccak256Hash(key.Bytes())] = value.Bytes()
+				}
 			}
 		}
 	}
@@ -636,4 +664,43 @@ func (s *StateDB) emitNativeEvents(contract common.Address, converter EventConve
 		log.Address = contract
 		s.AddLog(log)
 	}
+}
+
+func (s *StateDB) ToStorageDiff() dtypes.TransactionStateDiff {
+	stateDiff := dtypes.TransactionStateDiff{}
+	for hash := range s.DeletedAccounts {
+		stateDiff.DeletedAccounts = append(stateDiff.DeletedAccounts, hash)
+	}
+	for addr, account := range s.NewAccounts {
+		stateDiff.NewAccounts = append(stateDiff.NewAccounts, dtypes.NewAccount{
+			Address:  addr,
+			Balance:  account.Balance,
+			Nonce:    account.Nonce,
+			CodeHash: crypto.Keccak256Hash(account.CodeHash),
+		})
+	}
+	for account, storage := range s.StorageDiff {
+		values := make([]dtypes.IndexValuePair, 0)
+		for index, v := range storage {
+			value := uint256.NewInt(0)
+			if len(v) > 0 {
+				value = uint256.NewInt(0).SetBytes(v)
+			}
+			values = append(values, dtypes.IndexValuePair{
+				Index: index,
+				Value: value,
+			})
+		}
+		stateDiff.StorageDiff = append(stateDiff.StorageDiff, dtypes.AccountStorageDiff{
+			Address: account,
+			Values:  values,
+		})
+	}
+	for hash, code := range s.NewCodes {
+		stateDiff.NewCodes = append(stateDiff.NewCodes, dtypes.NewCode{
+			CodeHash: hash,
+			Code:     code,
+		})
+	}
+	return stateDiff
 }
