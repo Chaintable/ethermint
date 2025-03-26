@@ -517,6 +517,17 @@ func NewEthermintApp(
 	for k, v := range memKeys {
 		allKeys[k] = v
 	}
+	pipelineConfig := &evmkeeper.PipelineStorageConfig{
+		Region:           cast.ToString(appOpts.Get(srvflags.PipelineRegion)),
+		NodexBucket:      cast.ToString(appOpts.Get(srvflags.PipelineNodeXBucket)),
+		ChainTableBucket: cast.ToString(appOpts.Get(srvflags.PipelineChainTableBucket)),
+		Brokers:          cast.ToString(appOpts.Get(srvflags.PipelineBrokers)),
+		Topic:            cast.ToString(appOpts.Get(srvflags.PipelineTopic)),
+		ChainID:          cast.ToString(appOpts.Get(srvflags.PipelineChainID)),
+	}
+	if err := pipelineConfig.Validate(); err != nil {
+		panic(err)
+	}
 
 	app.EvmKeeper = evmkeeper.NewKeeper(
 		appCodec,
@@ -526,6 +537,7 @@ func NewEthermintApp(
 		tracer,
 		nil,
 		allKeys,
+		pipelineConfig,
 	)
 
 	// register the proposal types

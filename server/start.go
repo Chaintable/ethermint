@@ -246,6 +246,13 @@ which accepts a path for the resulting pprof file.
 	cmd.Flags().Uint64(server.FlagStateSyncSnapshotInterval, 0, "State sync snapshot interval")
 	cmd.Flags().Uint32(server.FlagStateSyncSnapshotKeepRecent, 2, "State sync snapshot to keep")
 
+	cmd.Flags().String(srvflags.PipelineRegion, "", "the region of s3")
+	cmd.Flags().String(srvflags.PipelineNodeXBucket, "", "the nodex bucket of s3")
+	cmd.Flags().String(srvflags.PipelineChainTableBucket, "", "the chaintable bucket of s3")
+	cmd.Flags().String(srvflags.PipelineBrokers, "", "the brokers of kafka")
+	cmd.Flags().String(srvflags.PipelineTopic, "", "the topic of kafka")
+	cmd.Flags().String(srvflags.PipelineChainID, "", "define s3 path by chain id")
+
 	// add support for all Tendermint-specific command line options
 	tcmd.AddNodeFlags(cmd)
 	return cmd

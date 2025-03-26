@@ -85,6 +85,8 @@ type Keeper struct {
 	// a set of store keys that should cover all the precompile use cases,
 	// or ideally just pass the application's all stores.
 	keys map[string]storetypes.StoreKey
+
+	pipelineStorage *pipelineStorage
 }
 
 // NewKeeper generates new evm module keeper
@@ -100,6 +102,7 @@ func NewKeeper(
 	tracer string,
 	customContractFns []CustomContractFn,
 	keys map[string]storetypes.StoreKey,
+	pipelineConfig *PipelineStorageConfig,
 ) *Keeper {
 	// ensure evm module account is set
 	if addr := ak.GetModuleAddress(types.ModuleName); addr == nil {
@@ -112,7 +115,7 @@ func NewKeeper(
 	}
 
 	// NOTE: we pass in the parameter space to the CommitStateDB in order to use custom denominations for the EVM operations
-	return &Keeper{
+	keeper := &Keeper{
 		cdc:               cdc,
 		storeService:      storeService,
 		authority:         authority,
@@ -126,6 +129,14 @@ func NewKeeper(
 		customContractFns: customContractFns,
 		keys:              keys,
 	}
+	if pipelineConfig != nil {
+		pipeline, err := newPipelineStorage(*pipelineConfig)
+		if err != nil {
+			panic(err)
+		}
+		keeper.pipelineStorage = pipeline
+	}
+	return keeper
 }
 
 func (k Keeper) StoreKeys() map[string]storetypes.StoreKey {

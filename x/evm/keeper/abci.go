@@ -17,9 +17,11 @@ package keeper
 
 import (
 	"cosmossdk.io/store/types"
-	"fmt"
-
+	tmtypes "github.com/cometbft/cometbft/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/ethereum/go-ethereum/common"
+	dtypes "github.com/zeta-chain/ethermint/debank/types"
+	evmtypes "github.com/zeta-chain/ethermint/x/evm/types"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
@@ -27,7 +29,10 @@ import (
 // BeginBlock sets the sdk Context and EIP155 chain id to the Keeper.
 func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 	k.WithChainID(ctx)
-	fmt.Printf("BeginBlock height: %d\n", ctx.BlockHeight())
+	k.Logger(ctx).Info("BeginBlock height: %d", ctx.BlockHeight())
+	if k.pipelineStorage != nil {
+		k.pipelineStorage.traceResults = make([]*dtypes.TraceResult, 0)
+	}
 	return nil
 }
 
@@ -37,10 +42,40 @@ func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	// Gas costs are handled within msg handler so costs should be ignored
 	infCtx := ctx.WithGasMeter(types.NewInfiniteGasMeter())
-
 	bloom := ethtypes.BytesToBloom(k.GetBlockBloomTransient(infCtx).Bytes())
 	k.EmitBlockBloomEvent(infCtx, bloom)
-	fmt.Printf("EndBlock height: %d\n", ctx.BlockHeight())
+	k.Logger(ctx).Info("EndBlock height: %d", ctx.BlockHeight())
+	if k.pipelineStorage != nil {
+		protoHeader := ctx.BlockHeader()
+		header, err := tmtypes.HeaderFromProto(&protoHeader)
+		if err != nil {
+			return err
+		}
+		var validatorAccAddr sdk.AccAddress
 
+		res, err := k.ValidatorAccount(ctx, &evmtypes.QueryValidatorAccountRequest{
+			ConsAddress: sdk.ConsAddress(header.ProposerAddress).String(),
+		})
+		if err != nil {
+			// use zero address as the validator operator address
+			validatorAccAddr = common.Address{}.Bytes()
+		} else {
+			validatorAccAddr, err = sdk.AccAddressFromBech32(res.AccountAddress)
+			if err != nil {
+				return err
+			}
+		}
+		gasMeter := ctx.BlockGasMeter()
+		k.pipelineStorage.header = header
+		k.pipelineStorage.baseFee = k.feeMarketKeeper.GetBaseFee(ctx)
+		k.pipelineStorage.gasUsed = gasMeter.GasConsumed()
+		k.pipelineStorage.gasLimit = gasMeter.Limit()
+		k.pipelineStorage.miner = common.BytesToAddress(validatorAccAddr)
+		k.pipelineStorage.bloom = bloom
+		if err := k.pipelineStorage.commit(ctx); err != nil {
+			return err
+		}
+		k.pipelineStorage.clear()
+	}
 	return nil
 }

@@ -172,7 +172,7 @@ func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
 // returning.
 //
 // For relevant discussion see: https://github.com/cosmos/cosmos-sdk/discussions/9072
-func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) (*types.MsgEthereumTxResponse, error) {
+func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx, tracer vm.EVMLogger, stateDb *statedb.StateDB) (*types.MsgEthereumTxResponse, error) {
 	var (
 		bloom        *big.Int
 		bloomReceipt ethtypes.Bloom
@@ -181,6 +181,9 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 	cfg, err := k.EVMConfig(ctx, sdk.ConsAddress(ctx.BlockHeader().ProposerAddress), k.eip155ChainID)
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to load evm config")
+	}
+	if stateDb != nil {
+		cfg.StateDb = stateDb
 	}
 	ethTx := msgEth.AsTransaction()
 
@@ -205,7 +208,7 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 	}
 
 	// pass true to commit the StateDB
-	res, err := k.ApplyMessageWithConfig(tmpCtx, msg, nil, true, cfg, txConfig)
+	res, err := k.ApplyMessageWithConfig(tmpCtx, msg, tracer, true, cfg, txConfig)
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to apply ethereum core message")
 	}

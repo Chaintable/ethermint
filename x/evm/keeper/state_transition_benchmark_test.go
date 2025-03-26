@@ -180,7 +180,7 @@ func BenchmarkApplyTransaction(b *testing.B) {
 		require.NoError(b, err)
 
 		b.StartTimer()
-		resp, err := suite.app.EvmKeeper.ApplyTransaction(suite.ctx, tx)
+		resp, err := suite.app.EvmKeeper.ApplyTransaction(suite.ctx, tx, nil, nil)
 		b.StopTimer()
 
 		require.NoError(b, err)
@@ -207,7 +207,7 @@ func BenchmarkApplyTransactionWithLegacyTx(b *testing.B) {
 		require.NoError(b, err)
 
 		b.StartTimer()
-		resp, err := suite.app.EvmKeeper.ApplyTransaction(suite.ctx, tx)
+		resp, err := suite.app.EvmKeeper.ApplyTransaction(suite.ctx, tx, nil, nil)
 		b.StopTimer()
 
 		require.NoError(b, err)
@@ -234,7 +234,7 @@ func BenchmarkApplyTransactionWithDynamicFeeTx(b *testing.B) {
 		require.NoError(b, err)
 
 		b.StartTimer()
-		resp, err := suite.app.EvmKeeper.ApplyTransaction(suite.ctx, tx)
+		resp, err := suite.app.EvmKeeper.ApplyTransaction(suite.ctx, tx, nil, nil)
 		b.StopTimer()
 
 		require.NoError(b, err)
