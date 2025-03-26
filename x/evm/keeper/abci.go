@@ -29,7 +29,7 @@ import (
 // BeginBlock sets the sdk Context and EIP155 chain id to the Keeper.
 func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 	k.WithChainID(ctx)
-	k.Logger(ctx).Info("BeginBlock height: %d", ctx.BlockHeight())
+	k.Logger(ctx).Info("BeginBlock", "height", ctx.BlockHeight())
 	if k.pipelineStorage != nil {
 		k.pipelineStorage.traceResults = make([]*dtypes.TraceResult, 0)
 	}
@@ -44,7 +44,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	infCtx := ctx.WithGasMeter(types.NewInfiniteGasMeter())
 	bloom := ethtypes.BytesToBloom(k.GetBlockBloomTransient(infCtx).Bytes())
 	k.EmitBlockBloomEvent(infCtx, bloom)
-	k.Logger(ctx).Info("EndBlock height: %d", ctx.BlockHeight())
+	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight())
 	if k.pipelineStorage != nil {
 		protoHeader := ctx.BlockHeader()
 		header, err := tmtypes.HeaderFromProto(&protoHeader)
