@@ -108,12 +108,6 @@ func NewKeeper(
 	if addr := ak.GetModuleAddress(types.ModuleName); addr == nil {
 		panic("the EVM module account has not been set")
 	}
-	if pipelineConfig != nil {
-		if err := pipelineConfig.Validate(); err != nil {
-			panic(err)
-		}
-	}
-
 	// ensure the authority account is correct
 	if err := sdk.VerifyAddressFormat(authority); err != nil {
 		panic(err)

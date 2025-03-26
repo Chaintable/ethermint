@@ -525,6 +525,9 @@ func NewEthermintApp(
 		Topic:            cast.ToString(appOpts.Get(srvflags.PipelineTopic)),
 		ChainID:          cast.ToString(appOpts.Get(srvflags.PipelineChainID)),
 	}
+	if err := pipelineConfig.Validate(); err != nil {
+		panic(err)
+	}
 
 	app.EvmKeeper = evmkeeper.NewKeeper(
 		appCodec,
