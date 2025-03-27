@@ -136,8 +136,8 @@ func (p pipelineStorage) toDebanOutput(ctx sdk.Context) rpctypes.DebankOutPut {
 	if p.header.Height == 1 {
 		parentRootHash = ethtypes.EmptyRootHash
 	} else {
-		lastCtx := ctx.WithBlockHeight(ctx.BlockHeight() - 1)
-		parentRootHash = common.BytesToHash(lastCtx.BlockHeader().AppHash)
+		//lastCtx := ctx.WithBlockHeight(ctx.BlockHeight() - 1)
+		parentRootHash = common.BytesToHash(ctx.BlockHeader().AppHash)
 	}
 	blockStateDiff := dtracer.BuildBlockStateDiff(parentRootHash, stateHeader.StateRoot, stateDiffs)
 

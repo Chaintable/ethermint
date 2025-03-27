@@ -49,6 +49,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		protoHeader := ctx.BlockHeader()
 		header, err := tmtypes.HeaderFromProto(&protoHeader)
 		if err != nil {
+			k.Logger(ctx).Error("HeaderFromProto", "error", err.Error())
 			return err
 		}
 		var validatorAccAddr sdk.AccAddress
@@ -62,6 +63,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		} else {
 			validatorAccAddr, err = sdk.AccAddressFromBech32(res.AccountAddress)
 			if err != nil {
+				k.Logger(ctx).Error("AccAddressFromBech32", "error", err.Error())
 				return err
 			}
 		}
