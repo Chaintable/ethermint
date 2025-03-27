@@ -75,6 +75,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 			if err != nil {
 				return err
 			}
+			k.Logger(ctx).Info("GetHistoricalInfo", "header", info.Header)
 			parentHeader, err := tmtypes.HeaderFromProto(&info.Header)
 			if err != nil {
 				k.Logger(ctx).Error("HeaderFromProto", "error", err.Error())
