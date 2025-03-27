@@ -44,7 +44,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	infCtx := ctx.WithGasMeter(types.NewInfiniteGasMeter())
 	bloom := ethtypes.BytesToBloom(k.GetBlockBloomTransient(infCtx).Bytes())
 	k.EmitBlockBloomEvent(infCtx, bloom)
-	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight())
+	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight(), "pipeline storage", k.pipelineStorage != nil)
 	if k.pipelineStorage != nil {
 		protoHeader := ctx.BlockHeader()
 		header, err := tmtypes.HeaderFromProto(&protoHeader)

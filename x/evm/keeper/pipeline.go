@@ -59,6 +59,7 @@ func newPipelineStorage(config PipelineStorageConfig) (*pipelineStorage, error) 
 func (p *pipelineStorage) commit(ctx sdk.Context) error {
 	output := p.toDebanOutput(ctx)
 	p.logger(ctx).Info("committing output", "output", output)
+	fmt.Printf("committing output to %+v\n", output)
 	//if err := p.uploader.UploadDebankOutPut(ctx, &output); err != nil {
 	//	return err
 	//}
