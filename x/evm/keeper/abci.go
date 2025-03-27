@@ -26,6 +26,13 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
+func (k *Keeper) Precommit(ctx sdk.Context) error {
+	header := ctx.BlockHeader()
+	headerInfo := ctx.HeaderInfo()
+	k.Logger(ctx).Info("Precommit", "header", header, "headerInfo", headerInfo)
+	return nil
+}
+
 // BeginBlock sets the sdk Context and EIP155 chain id to the Keeper.
 func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 	k.WithChainID(ctx)
@@ -88,7 +95,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		ethCfg := params.ChainConfig.EthereumConfig(k.eip155ChainID)
 		baseFee := k.GetBaseFee(ctx, ethCfg)
 		gasMeter := ctx.BlockGasMeter()
-		k.pipelineStorage.header = header
+		k.pipelineStorage.header = ctx.HeaderInfo()
 		k.pipelineStorage.headerHash = common.BytesToHash(ctx.HeaderHash())
 		k.pipelineStorage.parentHeaderHash = parentHash
 		k.pipelineStorage.parentStateRoot = parentStateRoot

@@ -1,13 +1,13 @@
 package keeper
 
 import (
+	"cosmossdk.io/core/header"
 	"fmt"
 	"math/big"
 	"time"
 
 	"cosmossdk.io/core/gas"
 	"cosmossdk.io/log"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -36,7 +36,7 @@ func (config PipelineStorageConfig) Validate() error {
 
 type pipelineStorage struct {
 	uploader         *util.Uploader
-	header           cmtproto.Header
+	header           header.Info
 	headerHash       common.Hash
 	parentHeaderHash common.Hash
 	parentStateRoot  common.Hash
@@ -73,7 +73,7 @@ func (p *pipelineStorage) commit(ctx sdk.Context) error {
 }
 
 func (p *pipelineStorage) clear() {
-	p.header = cmtproto.Header{}
+	p.header = header.Info{}
 	p.headerHash = common.Hash{}
 	p.parentHeaderHash = common.Hash{}
 	p.parentStateRoot = ethtypes.EmptyRootHash
@@ -94,7 +94,8 @@ func (p pipelineStorage) toDebanOutput(ctx sdk.Context) rpctypes.DebankOutPut {
 	if len(txs) == 0 {
 		transactionsRoot = ethtypes.EmptyRootHash
 	} else {
-		transactionsRoot = common.BytesToHash(p.header.DataHash)
+		//todo
+		transactionsRoot = ethtypes.EmptyRootHash
 	}
 	for _, traceResult := range p.traceResults {
 		txs = append(txs, traceResult.Transaction)
