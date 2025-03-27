@@ -85,3 +85,8 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	}
 	return nil
 }
+
+func (k *Keeper) Precommit(ctx sdk.Context) error {
+	k.Logger(ctx).Info("PreBlock", "height", ctx.BlockHeight(), "header", ctx.BlockHeader())
+	return nil
+}
