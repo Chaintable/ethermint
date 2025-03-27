@@ -29,7 +29,7 @@ import (
 // BeginBlock sets the sdk Context and EIP155 chain id to the Keeper.
 func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 	k.WithChainID(ctx)
-	k.Logger(ctx).Info("BeginBlock", "height", ctx.BlockHeight())
+	k.Logger(ctx).Info("BeginBlock", "height", ctx.BlockHeight(), "header", ctx.BlockHeader())
 	if k.pipelineStorage != nil {
 		k.pipelineStorage.traceResults = make([]*dtypes.TraceResult, 0)
 	}
@@ -47,6 +47,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight(), "pipeline storage", k.pipelineStorage != nil)
 	if k.pipelineStorage != nil {
 		protoHeader := ctx.BlockHeader()
+		k.Logger(ctx).Info("EndBlock", "header", protoHeader)
 		header, err := tmtypes.HeaderFromProto(&protoHeader)
 		if err != nil {
 			k.Logger(ctx).Error("HeaderFromProto", "error", err.Error())
@@ -67,10 +68,13 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 				return err
 			}
 		}
+		params := k.GetParams(ctx)
+		ethCfg := params.ChainConfig.EthereumConfig(k.eip155ChainID)
+		baseFee := k.GetBaseFee(ctx, ethCfg)
 		gasMeter := ctx.BlockGasMeter()
 		k.pipelineStorage.header = header
-		k.pipelineStorage.baseFee = k.feeMarketKeeper.GetBaseFee(ctx)
-		k.pipelineStorage.gasUsed = gasMeter.GasConsumed()
+		k.pipelineStorage.baseFee = baseFee
+		k.pipelineStorage.gasUsed = gasMeter.GasConsumedToLimit()
 		k.pipelineStorage.gasLimit = gasMeter.Limit()
 		k.pipelineStorage.miner = common.BytesToAddress(validatorAccAddr)
 		k.pipelineStorage.bloom = bloom
