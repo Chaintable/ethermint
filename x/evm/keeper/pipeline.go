@@ -7,7 +7,7 @@ import (
 
 	"cosmossdk.io/core/gas"
 	"cosmossdk.io/log"
-	tmtypes "github.com/cometbft/cometbft/types"
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -35,14 +35,17 @@ func (config PipelineStorageConfig) Validate() error {
 }
 
 type pipelineStorage struct {
-	uploader     *util.Uploader
-	header       tmtypes.Header
-	traceResults []*dtypes.TraceResult
-	baseFee      *big.Int
-	gasUsed      gas.Gas
-	gasLimit     gas.Gas
-	miner        common.Address
-	bloom        ethtypes.Bloom
+	uploader         *util.Uploader
+	header           cmtproto.Header
+	headerHash       common.Hash
+	parentHeaderHash common.Hash
+	parentStateRoot  common.Hash
+	traceResults     []*dtypes.TraceResult
+	baseFee          *big.Int
+	gasUsed          gas.Gas
+	gasLimit         gas.Gas
+	miner            common.Address
+	bloom            ethtypes.Bloom
 }
 
 func newPipelineStorage(config PipelineStorageConfig) (*pipelineStorage, error) {
@@ -70,7 +73,10 @@ func (p *pipelineStorage) commit(ctx sdk.Context) error {
 }
 
 func (p *pipelineStorage) clear() {
-	p.header = tmtypes.Header{}
+	p.header = cmtproto.Header{}
+	p.headerHash = common.Hash{}
+	p.parentHeaderHash = common.Hash{}
+	p.parentStateRoot = ethtypes.EmptyRootHash
 	p.traceResults = p.traceResults[:0]
 	p.baseFee = big.NewInt(0)
 	p.gasUsed = 0
@@ -97,9 +103,9 @@ func (p pipelineStorage) toDebanOutput(ctx sdk.Context) rpctypes.DebankOutPut {
 		stateDiffs = append(stateDiffs, traceResult.StateDiff)
 	}
 	block := dtypes.Block{
-		ID:                    p.header.Hash().String(),
+		ID:                    p.headerHash.String(),
 		Height:                big.NewInt(p.header.Height),
-		ParentID:              common.BytesToHash(p.header.LastCommitHash).String(),
+		ParentID:              p.parentHeaderHash.String(),
 		BaseFeePerGas:         p.baseFee,
 		Miner:                 p.miner.String(),
 		GasLimit:              big.NewInt(int64(p.gasLimit)),
@@ -115,8 +121,8 @@ func (p pipelineStorage) toDebanOutput(ctx sdk.Context) rpctypes.DebankOutPut {
 	}
 	var stateHeader = &dtypes.Header{
 		Number:           (*hexutil.Big)(block.Height),
-		Hash:             common.BytesToHash(p.header.Hash()),
-		ParentHash:       common.BytesToHash(p.header.LastBlockID.Hash),
+		Hash:             p.headerHash,
+		ParentHash:       p.parentHeaderHash,
 		Nonce:            ethtypes.BlockNonce{},
 		MixHash:          common.Hash{},
 		Sha3Uncles:       ethtypes.EmptyUncleHash,
@@ -132,14 +138,7 @@ func (p pipelineStorage) toDebanOutput(ctx sdk.Context) rpctypes.DebankOutPut {
 		ReceiptsRoot:     ethtypes.EmptyRootHash,
 		BaseFeePerGas:    (*hexutil.Big)(block.BaseFeePerGas),
 	}
-	var parentRootHash common.Hash
-	if p.header.Height == 1 {
-		parentRootHash = ethtypes.EmptyRootHash
-	} else {
-		//lastCtx := ctx.WithBlockHeight(ctx.BlockHeight() - 1)
-		parentRootHash = common.BytesToHash(ctx.BlockHeader().AppHash)
-	}
-	blockStateDiff := dtracer.BuildBlockStateDiff(parentRootHash, stateHeader.StateRoot, stateDiffs)
+	blockStateDiff := dtracer.BuildBlockStateDiff(p.parentStateRoot, stateHeader.StateRoot, stateDiffs)
 
 	return rpctypes.DebankOutPut{
 		BlockFile:      blockFile,

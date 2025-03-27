@@ -46,13 +46,8 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	k.EmitBlockBloomEvent(infCtx, bloom)
 	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight(), "pipeline storage", k.pipelineStorage != nil)
 	if k.pipelineStorage != nil {
-		protoHeader := ctx.BlockHeader()
-		k.Logger(ctx).Info("EndBlock", "header", protoHeader)
-		header, err := tmtypes.HeaderFromProto(&protoHeader)
-		if err != nil {
-			k.Logger(ctx).Error("HeaderFromProto", "error", err.Error())
-			return err
-		}
+		header := ctx.BlockHeader()
+		k.Logger(ctx).Info("EndBlock", "header", header)
 		var validatorAccAddr sdk.AccAddress
 
 		res, err := k.ValidatorAccount(ctx, &evmtypes.QueryValidatorAccountRequest{
@@ -68,11 +63,34 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 				return err
 			}
 		}
+		var (
+			parentHash      common.Hash
+			parentStateRoot common.Hash
+		)
+		if ctx.BlockHeight() == 1 {
+			parentHash = common.Hash{}
+			parentStateRoot = ethtypes.EmptyRootHash
+		} else {
+			info, err := k.stakingKeeper.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
+			if err != nil {
+				return err
+			}
+			parentHeader, err := tmtypes.HeaderFromProto(&info.Header)
+			if err != nil {
+				k.Logger(ctx).Error("HeaderFromProto", "error", err.Error())
+				return err
+			}
+			parentHash = common.BytesToHash(parentHeader.Hash())
+			parentStateRoot = common.BytesToHash(parentHeader.AppHash)
+		}
 		params := k.GetParams(ctx)
 		ethCfg := params.ChainConfig.EthereumConfig(k.eip155ChainID)
 		baseFee := k.GetBaseFee(ctx, ethCfg)
 		gasMeter := ctx.BlockGasMeter()
 		k.pipelineStorage.header = header
+		k.pipelineStorage.headerHash = common.BytesToHash(ctx.HeaderHash())
+		k.pipelineStorage.parentHeaderHash = parentHash
+		k.pipelineStorage.parentStateRoot = parentStateRoot
 		k.pipelineStorage.baseFee = baseFee
 		k.pipelineStorage.gasUsed = gasMeter.GasConsumedToLimit()
 		k.pipelineStorage.gasLimit = gasMeter.Limit()
@@ -83,10 +101,6 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		}
 		k.pipelineStorage.clear()
 	}
-	return nil
-}
 
-func (k *Keeper) Precommit(ctx sdk.Context) error {
-	k.Logger(ctx).Info("PreBlock", "height", ctx.BlockHeight(), "header", ctx.BlockHeader())
 	return nil
 }
