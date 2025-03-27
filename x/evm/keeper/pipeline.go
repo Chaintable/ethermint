@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"cosmossdk.io/core/gas"
+	"cosmossdk.io/log"
 	tmtypes "github.com/cometbft/cometbft/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -57,12 +58,13 @@ func newPipelineStorage(config PipelineStorageConfig) (*pipelineStorage, error) 
 
 func (p *pipelineStorage) commit(ctx sdk.Context) error {
 	output := p.toDebanOutput(ctx)
-	if err := p.uploader.UploadDebankOutPut(ctx, &output); err != nil {
-		return err
-	}
-	if err := p.uploader.PushDebankOutPut(ctx, &output); err != nil {
-		return err
-	}
+	p.logger(ctx).Info("committing output", "output", output)
+	//if err := p.uploader.UploadDebankOutPut(ctx, &output); err != nil {
+	//	return err
+	//}
+	//if err := p.uploader.PushDebankOutPut(ctx, &output); err != nil {
+	//	return err
+	//}
 	return nil
 }
 
@@ -144,4 +146,9 @@ func (p pipelineStorage) toDebanOutput(ctx sdk.Context) rpctypes.DebankOutPut {
 		StateDiff:      &blockStateDiff,
 		ValidationHash: blockFile.Validation().ValidationHash,
 	}
+}
+
+func (p pipelineStorage) logger(ctx sdk.Context) log.Logger {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	return sdkCtx.Logger()
 }
