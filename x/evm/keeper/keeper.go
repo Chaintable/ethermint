@@ -22,6 +22,7 @@ import (
 	corestoretypes "cosmossdk.io/core/store"
 	errorsmod "cosmossdk.io/errors"
 	"cosmossdk.io/log"
+	sdkmath "cosmossdk.io/math"
 	"cosmossdk.io/store/prefix"
 	storetypes "cosmossdk.io/store/types"
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -32,8 +33,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
-
-	sdkmath "cosmossdk.io/math"
 	ethermint "github.com/zeta-chain/ethermint/types"
 	"github.com/zeta-chain/ethermint/x/evm/statedb"
 	"github.com/zeta-chain/ethermint/x/evm/types"
@@ -87,6 +86,7 @@ type Keeper struct {
 	keys map[string]storetypes.StoreKey
 
 	pipelineStorage *pipelineStorage
+	pipelineKeeper  types.PipelineKeeper
 }
 
 // NewKeeper generates new evm module keeper
@@ -99,6 +99,7 @@ func NewKeeper(
 	bankKeeper types.BankKeeper,
 	sk types.StakingKeeper,
 	fmk types.FeeMarketKeeper,
+	pk types.PipelineKeeper,
 	tracer string,
 	customContractFns []CustomContractFn,
 	keys map[string]storetypes.StoreKey,
@@ -127,6 +128,7 @@ func NewKeeper(
 		tracer:            tracer,
 		customContractFns: customContractFns,
 		keys:              keys,
+		pipelineKeeper:    pk,
 	}
 	if pipelineConfig != nil {
 		pipeline, err := newPipelineStorage(*pipelineConfig)

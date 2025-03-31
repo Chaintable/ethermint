@@ -1,0 +1,18 @@
+syntax = "proto3";
+package ethermint.pipeline.v1;
+
+import "gogoproto/gogo.proto";
+import "tendermint/types/types.proto";
+import "amino/amino.proto";
+
+
+option go_package = "github.com/zeta-chain/ethermint/x/pipeline/types";
+
+// HistoricalInfo contains header and validator information for a given block.
+// It is stored as part of staking module's state, which persists the `n` most
+// recent HistoricalInfo
+// (`n` is set by the staking module's `historical_entries` parameter).
+message HistoricalInfo {
+  tendermint.types.Header header = 1 [(gogoproto.nullable) = false, (amino.dont_omitempty) = true];
+  bytes header_hash        = 7;
+}

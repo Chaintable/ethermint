@@ -28,6 +28,8 @@ import (
 	"cosmossdk.io/client/v2/autocli"
 	"cosmossdk.io/core/appmodule"
 	runtimeservices "github.com/cosmos/cosmos-sdk/runtime/services"
+	pipelinekeeper "github.com/zeta-chain/ethermint/x/pipeline/keeper"
+	pipelinetypes "github.com/zeta-chain/ethermint/x/pipeline/types"
 
 	"github.com/cosmos/gogoproto/proto"
 
@@ -331,7 +333,7 @@ func NewEthermintApp(
 		// ibc keys
 		ibcexported.StoreKey, ibctransfertypes.StoreKey,
 		// ethermint keys
-		evmtypes.StoreKey, feemarkettypes.StoreKey,
+		evmtypes.StoreKey, feemarkettypes.StoreKey, pipelinetypes.StoreKey,
 	)
 
 	// Add the EVM transient store key
@@ -528,12 +530,13 @@ func NewEthermintApp(
 	if err := pipelineConfig.Validate(); err != nil {
 		panic(err)
 	}
-
+	pipelineKeeper := pipelinekeeper.NewKeeper(runtime.NewKVStoreService(keys[pipelinetypes.StoreKey]), appCodec)
 	app.EvmKeeper = evmkeeper.NewKeeper(
 		appCodec,
 		runtime.NewKVStoreService(keys[evmtypes.StoreKey]),
 		keys[evmtypes.StoreKey], tkeys[evmtypes.TransientKey], authtypes.NewModuleAddress(govtypes.ModuleName),
 		app.AccountKeeper, app.BankKeeper, app.StakingKeeper, app.FeeMarketKeeper,
+		pipelineKeeper,
 		tracer,
 		nil,
 		allKeys,
@@ -561,7 +564,7 @@ func NewEthermintApp(
 
 	app.GovKeeper = *govKeeper.SetHooks(
 		govtypes.NewMultiGovHooks(
-			// register the governance hooks
+		// register the governance hooks
 		),
 	)
 

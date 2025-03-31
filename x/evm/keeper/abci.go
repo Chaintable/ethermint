@@ -16,12 +16,14 @@
 package keeper
 
 import (
+	"errors"
+
 	"cosmossdk.io/store/types"
-	tmtypes "github.com/cometbft/cometbft/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	dtypes "github.com/zeta-chain/ethermint/debank/types"
 	evmtypes "github.com/zeta-chain/ethermint/x/evm/types"
+	pipelinetypes "github.com/zeta-chain/ethermint/x/pipeline/types"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
@@ -78,18 +80,20 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 			parentHash = common.Hash{}
 			parentStateRoot = ethtypes.EmptyRootHash
 		} else {
-			info, err := k.stakingKeeper.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
-			if err != nil {
+			info, err := k.pipelineKeeper.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
+			switch {
+			case errors.Is(err, pipelinetypes.ErrNoHistoricalInfo):
+				k.Logger(ctx).Error("get empty parent info", "height", ctx.BlockHeight()-1, "error", err.Error())
+				parentHash = common.Hash{}
+				parentStateRoot = ethtypes.EmptyRootHash
+			case err == nil:
+				k.Logger(ctx).Info("GetHistoricalInfo", "header", info.Header)
+				getHeader := info.GetHeader()
+				parentHash = common.BytesToHash(info.GetHeaderHash())
+				parentStateRoot = common.BytesToHash(getHeader.GetDataHash())
+			default:
 				return err
 			}
-			k.Logger(ctx).Info("GetHistoricalInfo", "header", info.Header)
-			parentHeader, err := tmtypes.HeaderFromProto(&info.Header)
-			if err != nil {
-				k.Logger(ctx).Error("HeaderFromProto", "error", err.Error())
-				return err
-			}
-			parentHash = common.BytesToHash(parentHeader.Hash())
-			parentStateRoot = common.BytesToHash(parentHeader.AppHash)
 		}
 		params := k.GetParams(ctx)
 		ethCfg := params.ChainConfig.EthereumConfig(k.eip155ChainID)
