@@ -86,7 +86,6 @@ type Keeper struct {
 	keys map[string]storetypes.StoreKey
 
 	pipelineStorage *pipelineStorage
-	pipelineKeeper  types.PipelineKeeper
 }
 
 // NewKeeper generates new evm module keeper
@@ -99,7 +98,6 @@ func NewKeeper(
 	bankKeeper types.BankKeeper,
 	sk types.StakingKeeper,
 	fmk types.FeeMarketKeeper,
-	pk types.PipelineKeeper,
 	tracer string,
 	customContractFns []CustomContractFn,
 	keys map[string]storetypes.StoreKey,
@@ -128,7 +126,6 @@ func NewKeeper(
 		tracer:            tracer,
 		customContractFns: customContractFns,
 		keys:              keys,
-		pipelineKeeper:    pk,
 	}
 	if pipelineConfig != nil {
 		pipeline, err := newPipelineStorage(*pipelineConfig)

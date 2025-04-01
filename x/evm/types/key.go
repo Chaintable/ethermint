@@ -16,6 +16,7 @@
 package types
 
 import (
+	"encoding/binary"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -53,9 +54,10 @@ const (
 
 // KVStore key prefixes
 var (
-	KeyPrefixCode    = []byte{prefixCode}
-	KeyPrefixStorage = []byte{prefixStorage}
-	KeyPrefixParams  = []byte{prefixParams}
+	KeyPrefixCode     = []byte{prefixCode}
+	KeyPrefixStorage  = []byte{prefixStorage}
+	KeyPrefixParams   = []byte{prefixParams}
+	HistoricalInfoKey = []byte{0x50} // prefix for the historical info
 )
 
 // Transient Store key prefixes
@@ -74,4 +76,11 @@ func AddressStoragePrefix(address common.Address) []byte {
 // StateKey defines the full key under which an account state is stored.
 func StateKey(address common.Address, key []byte) []byte {
 	return append(AddressStoragePrefix(address), key...)
+}
+
+// GetHistoricalInfoKey returns a key prefix for indexing HistoricalInfo objects.
+func GetHistoricalInfoKey(height int64) []byte {
+	heightBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(heightBytes, uint64(height))
+	return append(HistoricalInfoKey, heightBytes...)
 }

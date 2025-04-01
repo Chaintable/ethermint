@@ -80,7 +80,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 			parentHash = common.Hash{}
 			parentStateRoot = ethtypes.EmptyRootHash
 		} else {
-			info, err := k.pipelineKeeper.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
+			info, err := k.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
 			switch {
 			case errors.Is(err, pipelinetypes.ErrNoHistoricalInfo):
 				k.Logger(ctx).Error("get empty parent info", "height", ctx.BlockHeight()-1, "error", err.Error())
@@ -113,6 +113,9 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		}
 		k.pipelineStorage.clear()
 	}
-
-	return nil
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	return k.SetHistoricalInfo(ctx, sdkCtx.BlockHeight(), &evmtypes.HistoricalInfo{
+		Header:     sdkCtx.BlockHeader(),
+		HeaderHash: sdkCtx.HeaderHash(),
+	})
 }
