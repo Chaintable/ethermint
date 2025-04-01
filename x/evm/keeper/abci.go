@@ -23,7 +23,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	dtypes "github.com/zeta-chain/ethermint/debank/types"
 	evmtypes "github.com/zeta-chain/ethermint/x/evm/types"
-	pipelinetypes "github.com/zeta-chain/ethermint/x/pipeline/types"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
@@ -82,7 +81,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		} else {
 			info, err := k.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
 			switch {
-			case errors.Is(err, pipelinetypes.ErrNoHistoricalInfo):
+			case errors.Is(err, evmtypes.ErrNoHistoricalInfo):
 				k.Logger(ctx).Error("get empty parent info", "height", ctx.BlockHeight()-1, "error", err.Error())
 				parentHash = common.Hash{}
 				parentStateRoot = ethtypes.EmptyRootHash

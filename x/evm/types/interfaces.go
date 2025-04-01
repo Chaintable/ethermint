@@ -29,7 +29,6 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	feemarkettypes "github.com/zeta-chain/ethermint/x/feemarket/types"
-	pipelinetypes "github.com/zeta-chain/ethermint/x/pipeline/types"
 )
 
 // AccountKeeper defines the expected account keeper interface
@@ -64,10 +63,6 @@ type FeeMarketKeeper interface {
 	GetBaseFee(ctx sdk.Context) *big.Int
 	GetParams(ctx sdk.Context) feemarkettypes.Params
 	AddTransientGasWanted(ctx sdk.Context, gasWanted uint64) (uint64, error)
-}
-
-type PipelineKeeper interface {
-	GetHistoricalInfo(ctx context.Context, height int64) (pipelinetypes.HistoricalInfo, error)
 }
 
 // Event Hooks
