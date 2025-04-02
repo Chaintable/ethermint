@@ -22,6 +22,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	dtypes "github.com/zeta-chain/ethermint/debank/types"
+	"github.com/zeta-chain/ethermint/x/evm/history"
 	evmtypes "github.com/zeta-chain/ethermint/x/evm/types"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -38,8 +39,8 @@ func (k *Keeper) Precommit(ctx sdk.Context) error {
 func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 	k.WithChainID(ctx)
 	k.Logger(ctx).Info("BeginBlock", "height", ctx.BlockHeight(), "header", ctx.BlockHeader())
-	if k.pipelineStorage != nil {
-		k.pipelineStorage.traceResults = make([]*dtypes.TraceResult, 0)
+	if k.pipelineContext != nil {
+		k.pipelineContext.traceResults = make([]*dtypes.TraceResult, 0)
 	}
 	return nil
 }
@@ -52,8 +53,8 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	infCtx := ctx.WithGasMeter(types.NewInfiniteGasMeter())
 	bloom := ethtypes.BytesToBloom(k.GetBlockBloomTransient(infCtx).Bytes())
 	k.EmitBlockBloomEvent(infCtx, bloom)
-	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight(), "pipeline storage", k.pipelineStorage != nil)
-	if k.pipelineStorage != nil {
+	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight(), "pipeline storage", k.pipelineContext != nil)
+	if k.pipelineContext != nil {
 		header := ctx.BlockHeader()
 		k.Logger(ctx).Info("EndBlock", "header", header)
 		var validatorAccAddr sdk.AccAddress
@@ -79,7 +80,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 			parentHash = common.Hash{}
 			parentStateRoot = ethtypes.EmptyRootHash
 		} else {
-			info, err := k.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
+			info, err := k.historyStore.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
 			switch {
 			case errors.Is(err, evmtypes.ErrNoHistoricalInfo):
 				k.Logger(ctx).Error("get empty parent info", "height", ctx.BlockHeight()-1, "error", err.Error())
@@ -87,9 +88,9 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 				parentStateRoot = ethtypes.EmptyRootHash
 			case err == nil:
 				k.Logger(ctx).Info("GetHistoricalInfo", "header", info.Header)
-				getHeader := info.GetHeader()
-				parentHash = common.BytesToHash(info.GetHeaderHash())
-				parentStateRoot = common.BytesToHash(getHeader.GetDataHash())
+				getHeader := info.Header
+				parentHash = common.BytesToHash(info.HeaderHash)
+				parentStateRoot = common.BytesToHash(getHeader.DataHash)
 			default:
 				return err
 			}
@@ -98,23 +99,28 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		ethCfg := params.ChainConfig.EthereumConfig(k.eip155ChainID)
 		baseFee := k.GetBaseFee(ctx, ethCfg)
 		gasMeter := ctx.BlockGasMeter()
-		k.pipelineStorage.header = ctx.HeaderInfo()
-		k.pipelineStorage.headerHash = common.BytesToHash(ctx.HeaderHash())
-		k.pipelineStorage.parentHeaderHash = parentHash
-		k.pipelineStorage.parentStateRoot = parentStateRoot
-		k.pipelineStorage.baseFee = baseFee
-		k.pipelineStorage.gasUsed = gasMeter.GasConsumedToLimit()
-		k.pipelineStorage.gasLimit = gasMeter.Limit()
-		k.pipelineStorage.miner = common.BytesToAddress(validatorAccAddr)
-		k.pipelineStorage.bloom = bloom
-		if err := k.pipelineStorage.commit(ctx); err != nil {
+		k.pipelineContext.header = ctx.HeaderInfo()
+		k.pipelineContext.headerHash = common.BytesToHash(ctx.HeaderHash())
+		k.pipelineContext.parentHeaderHash = parentHash
+		k.pipelineContext.parentStateRoot = parentStateRoot
+		k.pipelineContext.baseFee = baseFee
+		k.pipelineContext.gasUsed = gasMeter.GasConsumedToLimit()
+		k.pipelineContext.gasLimit = gasMeter.Limit()
+		k.pipelineContext.miner = common.BytesToAddress(validatorAccAddr)
+		k.pipelineContext.bloom = bloom
+		if err := k.pipelineContext.commit(ctx); err != nil {
 			return err
 		}
-		k.pipelineStorage.clear()
+		k.pipelineContext.clear()
 	}
-	sdkCtx := sdk.UnwrapSDKContext(ctx)
-	return k.SetHistoricalInfo(ctx, sdkCtx.BlockHeight(), &evmtypes.HistoricalInfo{
-		Header:     sdkCtx.BlockHeader(),
-		HeaderHash: sdkCtx.HeaderHash(),
-	})
+	if k.historyStore != nil {
+		sdkCtx := sdk.UnwrapSDKContext(ctx)
+		if err := k.historyStore.SetHistoricalInfo(ctx, sdkCtx.BlockHeight(), &history.HistoricalInfo{
+			Header:     sdkCtx.BlockHeader(),
+			HeaderHash: sdkCtx.HeaderHash(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

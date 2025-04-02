@@ -537,6 +537,7 @@ func NewEthermintApp(
 		nil,
 		allKeys,
 		pipelineConfig,
+		cast.ToString(appOpts.Get(srvflags.HistoryStorePath)),
 	)
 
 	// register the proposal types

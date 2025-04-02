@@ -16,6 +16,9 @@
 package keeper
 
 import (
+	"fmt"
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/zeta-chain/ethermint/x/evm/history"
 	"math/big"
 
 	"cosmossdk.io/api/tendermint/abci"
@@ -85,7 +88,9 @@ type Keeper struct {
 	// or ideally just pass the application's all stores.
 	keys map[string]storetypes.StoreKey
 
-	pipelineStorage *pipelineStorage
+	pipelineContext *pipelineContext
+
+	historyStore *history.Store
 }
 
 // NewKeeper generates new evm module keeper
@@ -102,6 +107,7 @@ func NewKeeper(
 	customContractFns []CustomContractFn,
 	keys map[string]storetypes.StoreKey,
 	pipelineConfig *PipelineStorageConfig,
+	historyStoragePath string,
 ) *Keeper {
 	// ensure evm module account is set
 	if addr := ak.GetModuleAddress(types.ModuleName); addr == nil {
@@ -128,11 +134,18 @@ func NewKeeper(
 		keys:              keys,
 	}
 	if pipelineConfig != nil {
-		pipeline, err := newPipelineStorage(*pipelineConfig)
+		pipeline, err := newPipelineContext(*pipelineConfig)
 		if err != nil {
 			panic(err)
 		}
-		keeper.pipelineStorage = pipeline
+		keeper.pipelineContext = pipeline
+	}
+	if historyStoragePath != "" {
+		historyDb, err := leveldb.OpenFile(historyStoragePath, nil)
+		if err != nil {
+			panic(fmt.Sprintf("open tracedir %s failed: %v", historyStoragePath, err))
+		}
+		keeper.historyStore = history.NewHistoryStore(historyDb)
 	}
 	return keeper
 }

@@ -69,8 +69,8 @@ func (k *Keeper) EthereumTx(goCtx context.Context, msg *types.MsgEthereumTx) (*t
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to apply transaction")
 	}
-	if k.pipelineStorage != nil {
-		k.pipelineStorage.traceResults = append(k.pipelineStorage.traceResults, &dtypes.TraceResult{
+	if k.pipelineContext != nil {
+		k.pipelineContext.traceResults = append(k.pipelineContext.traceResults, &dtypes.TraceResult{
 			Transaction: dtracer.BuildPipelineTransaction(tx, txConfig, common.HexToAddress(sender), big.NewInt(int64(response.GasUsed)), len(response.VmError) == 0),
 			StateDiff:   stateDb.ToStorageDiff(),
 			Traces:      tracer.GetTraces(),
