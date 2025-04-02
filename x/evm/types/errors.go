@@ -49,7 +49,6 @@ const (
 	codeErrGasOverflow
 	codeErrInvalidAccount
 	codeErrInvalidGasLimit
-	codeErrNoHistoricalInfo
 )
 
 var ErrPostTxProcessing = errors.New("failed to execute post processing")
@@ -117,8 +116,6 @@ var (
 
 	// ErrInvalidGasLimit returns an error if gas limit value is invalid
 	ErrInvalidGasLimit = errorsmod.Register(ModuleName, codeErrInvalidGasLimit, "invalid gas limit")
-
-	ErrNoHistoricalInfo = errorsmod.Register(ModuleName, codeErrNoHistoricalInfo, "no historical info found")
 )
 
 // NewExecErrorWithReason unpacks the revert return bytes and returns a wrapped error
