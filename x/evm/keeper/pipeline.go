@@ -2,8 +2,6 @@ package keeper
 
 import (
 	"fmt"
-	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/zeta-chain/ethermint/x/evm/history"
 	"math/big"
 	"time"
 
@@ -30,7 +28,7 @@ type PipelineStorageConfig struct {
 }
 
 func (config PipelineStorageConfig) Validate() error {
-	if config.Region == "" || config.NodexBucket == "" || config.ChainTableBucket == "" || config.Brokers == "" || config.Topic == "" || config.ChainID == "" || config.Storage == "" {
+	if config.Region == "" || config.NodexBucket == "" || config.ChainTableBucket == "" || config.Brokers == "" || config.Topic == "" || config.ChainID == "" {
 		return fmt.Errorf("invalid pipeline configuration")
 	}
 	return nil
