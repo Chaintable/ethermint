@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 
@@ -48,11 +49,10 @@ func (s *Store) GetHistoricalInfo(_ context.Context, height int64) (hi Historica
 	key := historicalInfoKey(height)
 	value, err := s.db.Get(key, nil)
 	if err != nil {
+		if errors.Is(err, leveldb.ErrNotFound) {
+			return hi, ErrNoHistoricalInfo
+		}
 		return hi, err
-	}
-
-	if value == nil {
-		return hi, ErrNoHistoricalInfo
 	}
 	if err = json.Unmarshal(value, &hi); err != nil {
 		return hi, err
