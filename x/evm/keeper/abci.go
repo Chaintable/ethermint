@@ -82,7 +82,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 		} else {
 			info, err := k.historyStore.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
 			switch {
-			case errors.Is(err, evmtypes.ErrNoHistoricalInfo):
+			case errors.Is(err, history.ErrNoHistoricalInfo):
 				k.Logger(ctx).Error("get empty parent info", "height", ctx.BlockHeight()-1, "error", err.Error())
 				parentHash = common.Hash{}
 				parentStateRoot = ethtypes.EmptyRootHash
