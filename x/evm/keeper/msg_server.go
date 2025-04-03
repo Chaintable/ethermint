@@ -53,6 +53,7 @@ func (k *Keeper) EthereumTx(goCtx context.Context, msg *types.MsgEthereumTx) (*t
 	tx := msg.AsTransaction()
 	txIndex := k.GetTxIndexTransient(ctx)
 
+	k.Logger(ctx).Info("EthereumTx", "txIndex", txIndex, "hash", cmtbytes.HexBytes(cmttypes.Tx(ctx.TxBytes()).Hash()))
 	labels := []metrics.Label{
 		telemetry.NewLabel("tx_type", fmt.Sprintf("%d", tx.Type())),
 	}
@@ -70,8 +71,11 @@ func (k *Keeper) EthereumTx(goCtx context.Context, msg *types.MsgEthereumTx) (*t
 		return nil, errorsmod.Wrap(err, "failed to apply transaction")
 	}
 	if k.pipelineContext != nil {
+		transaction := dtracer.BuildPipelineTransaction(tx, txConfig, common.HexToAddress(sender), big.NewInt(int64(response.GasUsed)), !response.Failed())
+		hash := cmtbytes.HexBytes(cmttypes.Tx(ctx.TxBytes()).Hash())
+		transaction.ID = hash.String()
 		k.pipelineContext.traceResults = append(k.pipelineContext.traceResults, &dtypes.TraceResult{
-			Transaction: dtracer.BuildPipelineTransaction(tx, txConfig, common.HexToAddress(sender), big.NewInt(int64(response.GasUsed)), len(response.VmError) == 0),
+			Transaction: transaction,
 			StateDiff:   stateDb.ToStorageDiff(),
 			Traces:      tracer.GetTraces(),
 			Events:      dtracer.BuildPipelineTxEvents(response.Logs, tx.Hash()),
