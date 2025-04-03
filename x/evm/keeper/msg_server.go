@@ -53,7 +53,7 @@ func (k *Keeper) EthereumTx(goCtx context.Context, msg *types.MsgEthereumTx) (*t
 	tx := msg.AsTransaction()
 	txIndex := k.GetTxIndexTransient(ctx)
 
-	k.Logger(ctx).Info("EthereumTx", "txIndex", txIndex, "hash", cmtbytes.HexBytes(cmttypes.Tx(ctx.TxBytes()).Hash()))
+	k.Logger(ctx).Info("EthereumTx", "txIndex", txIndex, "hash", common.BytesToHash(cmttypes.Tx(ctx.TxBytes()).Hash()).String())
 	labels := []metrics.Label{
 		telemetry.NewLabel("tx_type", fmt.Sprintf("%d", tx.Type())),
 	}
@@ -72,8 +72,8 @@ func (k *Keeper) EthereumTx(goCtx context.Context, msg *types.MsgEthereumTx) (*t
 	}
 	if k.pipelineContext != nil {
 		transaction := dtracer.BuildPipelineTransaction(tx, txConfig, common.HexToAddress(sender), big.NewInt(int64(response.GasUsed)), !response.Failed())
-		hash := cmtbytes.HexBytes(cmttypes.Tx(ctx.TxBytes()).Hash())
-		transaction.ID = hash.String()
+		hash := cmttypes.Tx(ctx.TxBytes()).Hash()
+		transaction.ID = common.BytesToHash(hash).String()
 		k.pipelineContext.traceResults = append(k.pipelineContext.traceResults, &dtypes.TraceResult{
 			Transaction: transaction,
 			StateDiff:   stateDb.ToStorageDiff(),
