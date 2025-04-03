@@ -19,6 +19,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common"
+	dtracer "github.com/zeta-chain/ethermint/debank/tracer"
+	dtypes "github.com/zeta-chain/ethermint/debank/types"
+	"github.com/zeta-chain/ethermint/x/evm/statedb"
+	"math/big"
 	"strconv"
 
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
@@ -48,6 +53,7 @@ func (k *Keeper) EthereumTx(goCtx context.Context, msg *types.MsgEthereumTx) (*t
 	tx := msg.AsTransaction()
 	txIndex := k.GetTxIndexTransient(ctx)
 
+	k.Logger(ctx).Info("EthereumTx", "txIndex", txIndex, "hash", common.BytesToHash(cmttypes.Tx(ctx.TxBytes()).Hash()).String())
 	labels := []metrics.Label{
 		telemetry.NewLabel("tx_type", fmt.Sprintf("%d", tx.Type())),
 	}
@@ -57,9 +63,23 @@ func (k *Keeper) EthereumTx(goCtx context.Context, msg *types.MsgEthereumTx) (*t
 		labels = append(labels, telemetry.NewLabel("execution", "call"))
 	}
 
-	response, err := k.ApplyTransaction(ctx, msg)
+	txConfig := k.TxConfig(ctx, tx.Hash())
+	tracer := dtracer.NewCallTracer(ctx, tx.Hash().String())
+	stateDb := statedb.New(ctx, k, txConfig)
+	response, err := k.ApplyTransaction(ctx, msg, tracer, stateDb)
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to apply transaction")
+	}
+	if k.pipelineContext != nil {
+		transaction := dtracer.BuildPipelineTransaction(tx, txConfig, common.HexToAddress(sender), big.NewInt(int64(response.GasUsed)), !response.Failed())
+		hash := cmttypes.Tx(ctx.TxBytes()).Hash()
+		transaction.ID = common.BytesToHash(hash).String()
+		k.pipelineContext.traceResults = append(k.pipelineContext.traceResults, &dtypes.TraceResult{
+			Transaction: transaction,
+			StateDiff:   stateDb.ToStorageDiff(),
+			Traces:      tracer.GetTraces(),
+			Events:      dtracer.BuildPipelineTxEvents(response.Logs, tx.Hash()),
+		})
 	}
 
 	defer func() {

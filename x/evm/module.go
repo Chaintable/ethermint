@@ -147,6 +147,10 @@ func (am AppModule) RegisterServices(cfg module.Configurator) {
 	types.RegisterQueryServer(cfg.QueryServer(), am.keeper)
 }
 
+func (am AppModule) Precommit(ctx context.Context) error {
+	return am.keeper.Precommit(sdk.UnwrapSDKContext(ctx))
+}
+
 // BeginBlock returns the begin block for the evm module.
 func (am AppModule) BeginBlock(ctx context.Context) error {
 	return am.keeper.BeginBlock(sdk.UnwrapSDKContext(ctx))

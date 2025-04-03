@@ -84,6 +84,20 @@ const (
 	TLSKeyPath  = "tls.key-path"
 )
 
+// Pipeline flags
+const (
+	PipelineRegion           = "pipeline.region"
+	PipelineNodeXBucket      = "pipeline.node-x-bucket"
+	PipelineChainTableBucket = "pipeline.chain-table-bucket"
+	PipelineBrokers          = "pipeline.brokers"
+	PipelineTopic            = "pipeline.topic"
+	PipelineChainID          = "pipeline.chain-id"
+)
+
+const (
+	HistoryStorePath = "history.store-path"
+)
+
 // AddTxFlags adds common flags for commands to post tx
 func AddTxFlags(cmd *cobra.Command) (*cobra.Command, error) {
 	cmd.PersistentFlags().String(flags.FlagChainID, "ethermint_9000-1", "Specify Chain ID for sending Tx")

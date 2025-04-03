@@ -16,18 +16,32 @@
 package keeper
 
 import (
-	"cosmossdk.io/store/types"
-	"fmt"
+	"errors"
 
+	"cosmossdk.io/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/ethereum/go-ethereum/common"
+	dtypes "github.com/zeta-chain/ethermint/debank/types"
+	"github.com/zeta-chain/ethermint/x/evm/history"
+	evmtypes "github.com/zeta-chain/ethermint/x/evm/types"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
+func (k *Keeper) Precommit(ctx sdk.Context) error {
+	header := ctx.BlockHeader()
+	headerInfo := ctx.HeaderInfo()
+	k.Logger(ctx).Info("Precommit", "header", header, "headerInfo", headerInfo)
+	return nil
+}
+
 // BeginBlock sets the sdk Context and EIP155 chain id to the Keeper.
 func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 	k.WithChainID(ctx)
-	fmt.Printf("BeginBlock height: %d\n", ctx.BlockHeight())
+	k.Logger(ctx).Info("BeginBlock", "height", ctx.BlockHeight(), "header", ctx.BlockHeader())
+	if k.pipelineContext != nil {
+		k.pipelineContext.traceResults = make([]*dtypes.TraceResult, 0)
+	}
 	return nil
 }
 
@@ -37,10 +51,76 @@ func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 func (k *Keeper) EndBlock(ctx sdk.Context) error {
 	// Gas costs are handled within msg handler so costs should be ignored
 	infCtx := ctx.WithGasMeter(types.NewInfiniteGasMeter())
-
 	bloom := ethtypes.BytesToBloom(k.GetBlockBloomTransient(infCtx).Bytes())
 	k.EmitBlockBloomEvent(infCtx, bloom)
-	fmt.Printf("EndBlock height: %d\n", ctx.BlockHeight())
+	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight(), "pipeline storage", k.pipelineContext != nil)
+	if k.pipelineContext != nil {
+		header := ctx.BlockHeader()
+		k.Logger(ctx).Info("EndBlock", "header", header)
+		var validatorAccAddr sdk.AccAddress
 
+		res, err := k.ValidatorAccount(ctx, &evmtypes.QueryValidatorAccountRequest{
+			ConsAddress: sdk.ConsAddress(header.ProposerAddress).String(),
+		})
+		if err != nil {
+			// use zero address as the validator operator address
+			validatorAccAddr = common.Address{}.Bytes()
+		} else {
+			validatorAccAddr, err = sdk.AccAddressFromBech32(res.AccountAddress)
+			if err != nil {
+				k.Logger(ctx).Error("AccAddressFromBech32", "error", err.Error())
+				return err
+			}
+		}
+		var (
+			parentHash      common.Hash
+			parentStateRoot common.Hash
+		)
+		if ctx.BlockHeight() == 1 {
+			parentHash = common.Hash{}
+			parentStateRoot = ethtypes.EmptyRootHash
+		} else {
+			info, err := k.historyStore.GetHistoricalInfo(ctx, ctx.BlockHeight()-1)
+			switch {
+			case errors.Is(err, history.ErrNoHistoricalInfo):
+				k.Logger(ctx).Error("get empty parent info", "height", ctx.BlockHeight()-1, "error", err.Error())
+				parentHash = common.Hash{}
+				parentStateRoot = ethtypes.EmptyRootHash
+			case err == nil:
+				k.Logger(ctx).Info("GetHistoricalInfo", "header", info.Header)
+				getHeader := info.Header
+				parentHash = common.BytesToHash(info.HeaderHash)
+				parentStateRoot = common.BytesToHash(getHeader.DataHash)
+			default:
+				return err
+			}
+		}
+		params := k.GetParams(ctx)
+		ethCfg := params.ChainConfig.EthereumConfig(k.eip155ChainID)
+		baseFee := k.GetBaseFee(ctx, ethCfg)
+		gasMeter := ctx.BlockGasMeter()
+		k.pipelineContext.header = ctx.HeaderInfo()
+		k.pipelineContext.headerHash = common.BytesToHash(ctx.HeaderHash())
+		k.pipelineContext.parentHeaderHash = parentHash
+		k.pipelineContext.parentStateRoot = parentStateRoot
+		k.pipelineContext.baseFee = baseFee
+		k.pipelineContext.gasUsed = gasMeter.GasConsumedToLimit()
+		k.pipelineContext.gasLimit = gasMeter.Limit()
+		k.pipelineContext.miner = common.BytesToAddress(validatorAccAddr)
+		k.pipelineContext.bloom = bloom
+		if err := k.pipelineContext.commit(ctx); err != nil {
+			return err
+		}
+		k.pipelineContext.clear()
+	}
+	if k.historyStore != nil {
+		sdkCtx := sdk.UnwrapSDKContext(ctx)
+		if err := k.historyStore.SetHistoricalInfo(ctx, sdkCtx.BlockHeight(), &history.HistoricalInfo{
+			Header:     sdkCtx.BlockHeader(),
+			HeaderHash: sdkCtx.HeaderHash(),
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }

@@ -16,12 +16,16 @@
 package keeper
 
 import (
+	"fmt"
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/zeta-chain/ethermint/x/evm/history"
 	"math/big"
 
 	"cosmossdk.io/api/tendermint/abci"
 	corestoretypes "cosmossdk.io/core/store"
 	errorsmod "cosmossdk.io/errors"
 	"cosmossdk.io/log"
+	sdkmath "cosmossdk.io/math"
 	"cosmossdk.io/store/prefix"
 	storetypes "cosmossdk.io/store/types"
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -32,8 +36,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
-
-	sdkmath "cosmossdk.io/math"
 	ethermint "github.com/zeta-chain/ethermint/types"
 	"github.com/zeta-chain/ethermint/x/evm/statedb"
 	"github.com/zeta-chain/ethermint/x/evm/types"
@@ -85,6 +87,10 @@ type Keeper struct {
 	// a set of store keys that should cover all the precompile use cases,
 	// or ideally just pass the application's all stores.
 	keys map[string]storetypes.StoreKey
+
+	pipelineContext *pipelineContext
+
+	historyStore *history.Store
 }
 
 // NewKeeper generates new evm module keeper
@@ -100,19 +106,20 @@ func NewKeeper(
 	tracer string,
 	customContractFns []CustomContractFn,
 	keys map[string]storetypes.StoreKey,
+	pipelineConfig *PipelineStorageConfig,
+	historyStoragePath string,
 ) *Keeper {
 	// ensure evm module account is set
 	if addr := ak.GetModuleAddress(types.ModuleName); addr == nil {
 		panic("the EVM module account has not been set")
 	}
-
 	// ensure the authority account is correct
 	if err := sdk.VerifyAddressFormat(authority); err != nil {
 		panic(err)
 	}
 
 	// NOTE: we pass in the parameter space to the CommitStateDB in order to use custom denominations for the EVM operations
-	return &Keeper{
+	keeper := &Keeper{
 		cdc:               cdc,
 		storeService:      storeService,
 		authority:         authority,
@@ -126,6 +133,21 @@ func NewKeeper(
 		customContractFns: customContractFns,
 		keys:              keys,
 	}
+	if pipelineConfig != nil {
+		pipeline, err := newPipelineContext(*pipelineConfig)
+		if err != nil {
+			panic(err)
+		}
+		keeper.pipelineContext = pipeline
+	}
+	if historyStoragePath != "" {
+		historyDb, err := leveldb.OpenFile(historyStoragePath, nil)
+		if err != nil {
+			panic(fmt.Sprintf("open tracedir %s failed: %v", historyStoragePath, err))
+		}
+		keeper.historyStore = history.NewHistoryStore(historyDb)
+	}
+	return keeper
 }
 
 func (k Keeper) StoreKeys() map[string]storetypes.StoreKey {
