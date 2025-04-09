@@ -17,8 +17,6 @@ package keeper
 
 import (
 	"cosmossdk.io/store/types"
-	"fmt"
-
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -27,7 +25,7 @@ import (
 // BeginBlock sets the sdk Context and EIP155 chain id to the Keeper.
 func (k *Keeper) BeginBlock(ctx sdk.Context) error {
 	k.WithChainID(ctx)
-	fmt.Printf("BeginBlock height: %d\n", ctx.BlockHeight())
+	k.Logger(ctx).Info("BeginBlock", "height", ctx.BlockHeight())
 	return nil
 }
 
@@ -40,7 +38,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context) error {
 
 	bloom := ethtypes.BytesToBloom(k.GetBlockBloomTransient(infCtx).Bytes())
 	k.EmitBlockBloomEvent(infCtx, bloom)
-	fmt.Printf("EndBlock height: %d\n", ctx.BlockHeight())
+	k.Logger(ctx).Info("EndBlock", "height", ctx.BlockHeight())
 
 	return nil
 }

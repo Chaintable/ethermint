@@ -125,7 +125,6 @@ func (k *Keeper) SetAccount(ctx sdk.Context, addr common.Address, account stated
 	acct := k.accountKeeper.GetAccount(ctx, cosmosAddr)
 	if acct == nil {
 		acct = k.accountKeeper.NewAccountWithAddress(ctx, cosmosAddr)
-		fmt.Printf("New account with address account: %v\n", acct)
 	}
 
 	if err := acct.SetSequence(account.Nonce); err != nil {
@@ -139,7 +138,6 @@ func (k *Keeper) SetAccount(ctx sdk.Context, addr common.Address, account stated
 			return err
 		}
 	}
-	fmt.Printf("source account: %+v, target account: %+v\n", account, acct)
 	k.accountKeeper.SetAccount(ctx, acct)
 
 	if err := k.SetBalance(ctx, addr, account.Balance.ToBig()); err != nil {
