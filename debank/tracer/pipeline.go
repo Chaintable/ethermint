@@ -39,9 +39,13 @@ func BuildPipelineTransaction(
 	gasUsed *big.Int,
 	success bool,
 ) dtypes.Transaction {
+	var to = common.Address{}
+	if tx.To() != nil {
+		to = *tx.To()
+	}
 	transaction := dtypes.Transaction{
 		From:             strings.ToLower(from.Hex()),
-		To:               strings.ToLower(tx.To().Hex()),
+		To:               strings.ToLower(to.Hex()),
 		Gas:              big.NewInt(int64(tx.Gas())),
 		GasUsed:          gasUsed,
 		Status:           success,
