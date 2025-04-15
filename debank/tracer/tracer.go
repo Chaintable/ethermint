@@ -3,7 +3,7 @@ package tracer
 import (
 	"encoding/json"
 	"errors"
-	"github.com/ethereum/go-ethereum/eth/tracers"
+	"fmt"
 	"math/big"
 	"strings"
 
@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/eth/tracers"
 	dtypes "github.com/zeta-chain/ethermint/debank/types"
 )
 
@@ -257,6 +258,15 @@ func (t *callTracer) CaptureTxEnd(restGas uint64) {
 		topCall := &t.callstack[0]
 		topCall.TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), "", "0"})
 		t.traces = append(t.traces, t.ToTrace(topCall))
+		t.addTraceId(topCall)
+	}
+}
+
+func (t *callTracer) addTraceId(cf *callFrame) {
+	for i := range cf.Calls {
+		cf.Calls[i].ParentTraceID = cf.TraceID
+		cf.Calls[i].TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[i].PosInParentTrace)})
+		t.addTraceId(&cf.Calls[i])
 	}
 }
 
