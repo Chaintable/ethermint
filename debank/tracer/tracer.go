@@ -258,15 +258,18 @@ func (t *callTracer) CaptureTxEnd(restGas uint64) {
 		topCall := &t.callstack[0]
 		topCall.TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), "", "0"})
 		t.traces = append(t.traces, t.ToTrace(topCall))
-		t.addTraceId(topCall)
+		t.addTrace(topCall)
 	}
 }
 
-func (t *callTracer) addTraceId(cf *callFrame) {
+func (t *callTracer) addTrace(cf *callFrame) {
 	for i := range cf.Calls {
 		cf.Calls[i].ParentTraceID = cf.TraceID
 		cf.Calls[i].TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[i].PosInParentTrace)})
-		t.addTraceId(&cf.Calls[i])
+		t.addTrace(&cf.Calls[i])
+	}
+	for i := range cf.Calls {
+		t.traces = append(t.traces, t.ToTrace(&cf.Calls[i]))
 	}
 }
 
