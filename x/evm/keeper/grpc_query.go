@@ -593,14 +593,15 @@ func (k *Keeper) traceTx(
 	tracer = logger.NewStructLogger(&logConfig)
 
 	tCtx := &tracers.Context{
-		BlockHash: txConfig.BlockHash,
+		BlockNumber: big.NewInt(ctx.BlockHeight()),
+		BlockHash:   txConfig.BlockHash,
 		// #nosec G115 TxIndex always positive
 		TxIndex: int(txConfig.TxIndex),
 		TxHash:  txConfig.TxHash,
 	}
 
 	if traceConfig.Tracer == dtracer.Name {
-		tracer = dtracer.NewCallTracer(ctx, txConfig.TxHash.Hex())
+		tracer = dtracer.NewCallTracer(tCtx)
 	} else if traceConfig.Tracer != "" {
 		if tracer, err = tracers.DefaultDirectory.New(traceConfig.Tracer, tCtx, tracerJSONConfig); err != nil {
 			return nil, 0, status.Error(codes.Internal, err.Error())
@@ -644,7 +645,7 @@ func (k *Keeper) traceTx(
 			return nil, 0, status.Error(codes.Internal, err.Error())
 		}
 		traceRes.Transaction = dtracer.BuildPipelineTransaction(tx, txConfig, from, big.NewInt(int64(res.GasUsed)), len(res.VmError) == 0)
-		traceRes.Events = dtracer.BuildPipelineTxEvents(res.Logs, tx.Hash())
+		traceRes.Events = dtracer.BuildPipelineTxEvents(res.Logs, tx.Hash(), txConfig.LogIndex)
 		traceRes.StateDiff = cfg.StateDb.ToStorageDiff()
 		result, _ = json.Marshal(traceRes)
 	}

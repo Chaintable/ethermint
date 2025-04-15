@@ -89,7 +89,7 @@ func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	return &blockHeader
 }
 
-func BuildPipelineTxEvents(logs []*types.Log, txHash common.Hash) []dtypes.Event {
+func BuildPipelineTxEvents(logs []*types.Log, txHash common.Hash, logIndex uint) []dtypes.Event {
 	events := make([]dtypes.Event, 0, len(logs))
 
 	for i, log := range logs {
@@ -108,6 +108,7 @@ func BuildPipelineTxEvents(logs []*types.Log, txHash common.Hash) []dtypes.Event
 			Position:      int64(i),
 			ParentTraceID: txHash.Hex(),
 			ID:            dtypes.ToHash([]string{txHash.Hex(), fmt.Sprintf("%d", i)}),
+			Idx:           logIndex + uint(i),
 		})
 	}
 	return events

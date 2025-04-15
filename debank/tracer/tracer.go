@@ -7,7 +7,6 @@ import (
 	"math/big"
 	"strings"
 
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -115,7 +114,7 @@ func (t *callTracer) ToTrace(f *callFrame) dtypes.Trace {
 		Output:            f.Output,
 		CallCreateType:    CallCreateType,
 		CallType:          CallType,
-		TxID:              t.txID,
+		TxID:              t.ctx.TxHash.Hex(),
 		ParentTraceID:     f.ParentTraceID,
 		PosInParentTrace:  int64(f.PosInParentTrace),
 		SelfStorageChange: f.SelfStorageChange,
@@ -127,15 +126,13 @@ type callTracer struct {
 	callstack []callFrame
 	gasLimit  uint64
 	reason    error
-	txID      string
 	Evm       *vm.EVM
-	ctx       sdk.Context
+	ctx       *tracers.Context
 	traces    []dtypes.Trace
 }
 
-func NewCallTracer(ctx sdk.Context, txID string) *callTracer {
+func NewCallTracer(ctx *tracers.Context) *callTracer {
 	return &callTracer{
-		txID:   txID,
 		ctx:    ctx,
 		traces: make([]dtypes.Trace, 0),
 	}
@@ -181,8 +178,8 @@ func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
 	if err != nil {
 		reverted = true
 	}
-	rules := t.Evm.ChainConfig().Rules(big.NewInt(t.ctx.BlockHeight()), t.Evm.ChainConfig().MergeNetsplitBlock != nil, uint64(t.ctx.BlockTime().Unix()))
-	if !rules.IsHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
+	isHomestead := t.Evm.ChainConfig().IsHomestead(t.ctx.BlockNumber)
+	if !isHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
 		reverted = false
 	}
 	size := len(t.callstack)
@@ -207,8 +204,8 @@ func (t *callTracer) CaptureEnd(output []byte, usedGas uint64, err error) {
 	if err != nil {
 		reverted = true
 	}
-	rules := t.Evm.ChainConfig().Rules(big.NewInt(t.ctx.BlockHeight()), t.Evm.ChainConfig().MergeNetsplitBlock != nil, uint64(t.ctx.BlockTime().Unix()))
-	if !rules.IsHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
+	isHomestead := t.Evm.ChainConfig().IsHomestead(t.ctx.BlockNumber)
+	if !isHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
 		reverted = false
 	}
 	if len(t.callstack) != 1 {
@@ -258,7 +255,7 @@ func (t *callTracer) CaptureTxEnd(restGas uint64) {
 	setStorageChange(&t.callstack[0])
 	if len(t.callstack) == 1 && !t.callstack[0].failed() {
 		topCall := &t.callstack[0]
-		topCall.TraceID = dtypes.ToHash([]string{t.txID, "", "0"})
+		topCall.TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), "", "0"})
 		t.traces = append(t.traces, t.ToTrace(topCall))
 	}
 }
