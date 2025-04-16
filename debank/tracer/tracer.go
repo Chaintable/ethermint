@@ -275,10 +275,8 @@ func (t *callTracer) addTrace(cf *callFrame, traceAddress []int) {
 		cf.Calls[i].TraceAddress = childAddr
 		cf.Calls[i].Subtraces = len(cf.Calls[i].Calls)
 		cf.Calls[i].TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[i].PosInParentTrace)})
-		t.addTrace(&cf.Calls[i], childAddr)
-	}
-	for i := range cf.Calls {
 		t.traces = append(t.traces, t.ToTrace(&cf.Calls[i]))
+		t.addTrace(&cf.Calls[i], childAddr)
 	}
 }
 
