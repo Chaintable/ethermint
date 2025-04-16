@@ -3,15 +3,15 @@ package tracer
 import (
 	"encoding/json"
 	"errors"
-	"github.com/ethereum/go-ethereum/eth/tracers"
+	"fmt"
 	"math/big"
 	"strings"
 
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/eth/tracers"
 	dtypes "github.com/zeta-chain/ethermint/debank/types"
 )
 
@@ -37,6 +37,8 @@ type callFrame struct {
 	TraceID           string `json:"trace_id"`
 	StorageChange     bool   `json:"storageChange"`
 	SelfStorageChange bool   `json:"self_storage_change"`
+	Subtraces         int    `json:"subtraces"`
+	TraceAddress      []int  `json:"trace_address"`
 
 	// Placed at end on purpose. The RLP will be decoded to 0 instead of
 	// nil if there are non-empty elements after in the struct.
@@ -115,11 +117,13 @@ func (t *callTracer) ToTrace(f *callFrame) dtypes.Trace {
 		Output:            f.Output,
 		CallCreateType:    CallCreateType,
 		CallType:          CallType,
-		TxID:              t.txID,
+		TxID:              t.ctx.TxHash.Hex(),
 		ParentTraceID:     f.ParentTraceID,
 		PosInParentTrace:  int64(f.PosInParentTrace),
 		SelfStorageChange: f.SelfStorageChange,
 		StorageChange:     f.StorageChange,
+		Subtraces:         f.Subtraces,
+		TraceAddress:      f.TraceAddress,
 	}
 }
 
@@ -127,15 +131,13 @@ type callTracer struct {
 	callstack []callFrame
 	gasLimit  uint64
 	reason    error
-	txID      string
 	Evm       *vm.EVM
-	ctx       sdk.Context
+	ctx       *tracers.Context
 	traces    []dtypes.Trace
 }
 
-func NewCallTracer(ctx sdk.Context, txID string) *callTracer {
+func NewCallTracer(ctx *tracers.Context) *callTracer {
 	return &callTracer{
-		txID:   txID,
 		ctx:    ctx,
 		traces: make([]dtypes.Trace, 0),
 	}
@@ -181,8 +183,8 @@ func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
 	if err != nil {
 		reverted = true
 	}
-	rules := t.Evm.ChainConfig().Rules(big.NewInt(t.ctx.BlockHeight()), t.Evm.ChainConfig().MergeNetsplitBlock != nil, uint64(t.ctx.BlockTime().Unix()))
-	if !rules.IsHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
+	isHomestead := t.Evm.ChainConfig().IsHomestead(t.ctx.BlockNumber)
+	if !isHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
 		reverted = false
 	}
 	size := len(t.callstack)
@@ -197,7 +199,6 @@ func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
 	call.GasUsed = usedGas
 	call.processOutput(output, err, reverted)
 	if !call.failed() {
-		call.PosInParentTrace = len(t.callstack[size-1].Calls) + len(t.callstack[size-1].Logs)
 		t.callstack[size-1].Calls = append(t.callstack[size-1].Calls, call)
 	}
 }
@@ -207,8 +208,8 @@ func (t *callTracer) CaptureEnd(output []byte, usedGas uint64, err error) {
 	if err != nil {
 		reverted = true
 	}
-	rules := t.Evm.ChainConfig().Rules(big.NewInt(t.ctx.BlockHeight()), t.Evm.ChainConfig().MergeNetsplitBlock != nil, uint64(t.ctx.BlockTime().Unix()))
-	if !rules.IsHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
+	isHomestead := t.Evm.ChainConfig().IsHomestead(t.ctx.BlockNumber)
+	if !isHomestead && errors.Is(err, vm.ErrCodeStoreOutOfGas) {
 		reverted = false
 	}
 	if len(t.callstack) != 1 {
@@ -258,8 +259,24 @@ func (t *callTracer) CaptureTxEnd(restGas uint64) {
 	setStorageChange(&t.callstack[0])
 	if len(t.callstack) == 1 && !t.callstack[0].failed() {
 		topCall := &t.callstack[0]
-		topCall.TraceID = dtypes.ToHash([]string{t.txID, "", "0"})
+		topCall.TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), "", "0"})
+		topCall.TraceAddress = []int{}
+		topCall.Subtraces = len(topCall.Calls)
 		t.traces = append(t.traces, t.ToTrace(topCall))
+		t.addTrace(topCall, []int{})
+	}
+}
+
+func (t *callTracer) addTrace(cf *callFrame, traceAddress []int) {
+	for i := range cf.Calls {
+		childAddr := childTraceAddress(traceAddress, i)
+		cf.Calls[i].ParentTraceID = cf.TraceID
+		cf.Calls[i].PosInParentTrace = i
+		cf.Calls[i].TraceAddress = childAddr
+		cf.Calls[i].Subtraces = len(cf.Calls[i].Calls)
+		cf.Calls[i].TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[i].PosInParentTrace)})
+		t.traces = append(t.traces, t.ToTrace(&cf.Calls[i]))
+		t.addTrace(&cf.Calls[i], childAddr)
 	}
 }
 
@@ -280,4 +297,11 @@ func (t *callTracer) GetResult() (json.RawMessage, error) {
 
 func (t *callTracer) Stop(err error) {
 
+}
+
+func childTraceAddress(a []int, i int) []int {
+	child := make([]int, 0, len(a)+1)
+	child = append(child, a...)
+	child = append(child, i)
+	return child
 }
