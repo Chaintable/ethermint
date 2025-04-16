@@ -23,4 +23,6 @@ type Trace struct {
 	PosInParentTrace  int64         `json:"pos_in_parent_trace"`
 	SelfStorageChange bool          `json:"self_storage_change"`
 	StorageChange     bool          `json:"storage_change"`
+	Subtraces         int           `json:"subtraces"`
+	TraceAddress      []int         `json:"trace_address"`
 }
