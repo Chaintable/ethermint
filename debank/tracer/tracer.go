@@ -255,6 +255,9 @@ func setStorageChange(cf *callFrame) {
 }
 
 func (t *callTracer) CaptureTxEnd(restGas uint64) {
+	if len(t.callstack) < 1 {
+		return
+	}
 	clearFailedLogs(&t.callstack[0], false)
 	setStorageChange(&t.callstack[0])
 	if len(t.callstack) == 1 && !t.callstack[0].failed() {
