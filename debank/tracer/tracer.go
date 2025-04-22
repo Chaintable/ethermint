@@ -227,7 +227,6 @@ func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, sco
 }
 
 func (t *callTracer) CaptureFault(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
-
 }
 
 func clearFailedLogs(cf *callFrame, parentFailed bool) {
