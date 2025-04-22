@@ -144,12 +144,10 @@ func NewCallTracer(ctx *tracers.Context) *callTracer {
 }
 
 func (t *callTracer) CaptureTxStart(gasLimit uint64) {
-	fmt.Printf("Capture Tx Start\n")
 	t.gasLimit = gasLimit
 }
 
 func (t *callTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
-	fmt.Printf("Capture Start\n")
 	toCopy := to
 	tpy := vm.CALL
 	if create {
@@ -168,7 +166,6 @@ func (t *callTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Ad
 
 }
 func (t *callTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
-	fmt.Printf("Capture Enter\n")
 	toCopy := to
 	call := callFrame{
 		Type:  typ,
@@ -182,7 +179,6 @@ func (t *callTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.
 }
 
 func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
-	fmt.Printf("Capture Exit\n")
 	var reverted bool
 	if err != nil {
 		reverted = true
@@ -208,7 +204,6 @@ func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
 }
 
 func (t *callTracer) CaptureEnd(output []byte, usedGas uint64, err error) {
-	fmt.Printf("Capture End\n")
 	var reverted bool
 	if err != nil {
 		reverted = true
@@ -225,7 +220,6 @@ func (t *callTracer) CaptureEnd(output []byte, usedGas uint64, err error) {
 }
 
 func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, opDepth int, err error) {
-	fmt.Printf("Capture State\n")
 	if op == vm.SSTORE {
 		t.callstack[len(t.callstack)-1].SelfStorageChange = true
 		t.callstack[len(t.callstack)-1].StorageChange = true
@@ -233,7 +227,6 @@ func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, sco
 }
 
 func (t *callTracer) CaptureFault(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
-	fmt.Printf("Capture Fault\n")
 }
 
 func clearFailedLogs(cf *callFrame, parentFailed bool) {
@@ -261,7 +254,6 @@ func setStorageChange(cf *callFrame) {
 }
 
 func (t *callTracer) CaptureTxEnd(restGas uint64) {
-	fmt.Printf("Capture TxEnd\n")
 	if len(t.callstack) < 1 {
 		return
 	}
