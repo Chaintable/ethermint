@@ -10,9 +10,13 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers"
+	"github.com/holiman/uint256"
 	dtypes "github.com/zeta-chain/ethermint/debank/types"
+	"github.com/zeta-chain/ethermint/x/evm/statedb"
 )
 
 const (
@@ -82,9 +86,9 @@ func (f *callFrame) processOutput(output []byte, err error, reverted bool) {
 	}
 }
 
-var _ tracers.Tracer = (*callTracer)(nil)
+var _ tracers.Tracer = (*CallTracer)(nil)
 
-func (t *callTracer) ToTrace(f *callFrame) dtypes.Trace {
+func (t *CallTracer) ToTrace(f *callFrame) dtypes.Trace {
 	CallCreateType := ""
 	CallType := ""
 	switch f.Type {
@@ -127,7 +131,7 @@ func (t *callTracer) ToTrace(f *callFrame) dtypes.Trace {
 	}
 }
 
-type callTracer struct {
+type CallTracer struct {
 	callstack []callFrame
 	gasLimit  uint64
 	reason    error
@@ -135,20 +139,31 @@ type callTracer struct {
 	ctx       *tracers.Context
 	traces    []dtypes.Trace
 	logs      []dtypes.Event
+
+	// to get state diff
+	DeletedAccounts map[common.Hash]struct{}
+	NewAccounts     map[common.Hash]statedb.Account
+	StorageDiff     map[common.Hash]map[common.Hash][]byte
+	NewCodes        map[common.Hash][]byte // The mutated contract code
 }
 
-func NewCallTracer(ctx *tracers.Context) *callTracer {
-	return &callTracer{
+func NewCallTracer(ctx *tracers.Context) *CallTracer {
+	tracer := &CallTracer{
 		ctx:    ctx,
 		traces: make([]dtypes.Trace, 0),
 	}
+	tracer.DeletedAccounts = make(map[common.Hash]struct{})
+	tracer.NewAccounts = make(map[common.Hash]statedb.Account)
+	tracer.StorageDiff = make(map[common.Hash]map[common.Hash][]byte)
+	tracer.NewCodes = make(map[common.Hash][]byte)
+	return tracer
 }
 
-func (t *callTracer) CaptureTxStart(gasLimit uint64) {
+func (t *CallTracer) CaptureTxStart(gasLimit uint64) {
 	t.gasLimit = gasLimit
 }
 
-func (t *callTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
+func (t *CallTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Address, create bool, input []byte, gas uint64, value *big.Int) {
 	toCopy := to
 	tpy := vm.CALL
 	if create {
@@ -166,7 +181,7 @@ func (t *callTracer) CaptureStart(env *vm.EVM, from common.Address, to common.Ad
 	t.callstack = append(t.callstack, call)
 
 }
-func (t *callTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
+func (t *CallTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
 	toCopy := to
 	call := callFrame{
 		Type:  typ,
@@ -179,7 +194,7 @@ func (t *callTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.
 	t.callstack = append(t.callstack, call)
 }
 
-func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
+func (t *CallTracer) CaptureExit(output []byte, usedGas uint64, err error) {
 	var reverted bool
 	if err != nil {
 		reverted = true
@@ -205,7 +220,7 @@ func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
 	}
 }
 
-func (t *callTracer) CaptureEnd(output []byte, usedGas uint64, err error) {
+func (t *CallTracer) CaptureEnd(output []byte, usedGas uint64, err error) {
 	var reverted bool
 	if err != nil {
 		reverted = true
@@ -221,7 +236,7 @@ func (t *callTracer) CaptureEnd(output []byte, usedGas uint64, err error) {
 	t.callstack[0].processOutput(output, err, reverted)
 }
 
-func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, opDepth int, err error) {
+func (t *CallTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, rData []byte, opDepth int, err error) {
 	if op == vm.SSTORE {
 		t.callstack[len(t.callstack)-1].SelfStorageChange = true
 		t.callstack[len(t.callstack)-1].StorageChange = true
@@ -229,53 +244,9 @@ func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, sco
 	if err != nil {
 		return
 	}
-	switch op {
-	case vm.LOG0, vm.LOG1, vm.LOG2, vm.LOG3, vm.LOG4:
-		size := int(op - vm.LOG0)
-
-		stack := scope.Stack
-		stackData := stack.Data()
-
-		// Don't modify the stack
-		mStart := stackData[len(stackData)-1]
-		mSize := stackData[len(stackData)-2]
-		topics := make([]common.Hash, size)
-		for i := 0; i < size; i++ {
-			topic := stackData[len(stackData)-2-(i+1)]
-			topics[i] = topic.Bytes32()
-		}
-
-		data, err := tracers.GetMemoryCopyPadded(scope.Memory, int64(mStart.Uint64()), int64(mSize.Uint64()))
-		if err != nil {
-			// mSize was unrealistically large
-			return
-		}
-
-		var (
-			selector        string
-			remainingTopics []string
-			topicStrings    = make([]string, 0, len(topics))
-		)
-		for _, topic := range topics {
-			topicStrings = append(topicStrings, topic.Hex())
-		}
-		if len(topicStrings) > 0 {
-			selector = topicStrings[0]
-			remainingTopics = topicStrings[1:]
-		}
-
-		log := dtypes.Event{
-			Address:  scope.Contract.Address().Hex(),
-			Selector: selector,
-			Topics:   remainingTopics,
-			Data:     hexutil.Bytes(data),
-			Position: int64(len(t.callstack[len(t.callstack)-1].Calls) + len(t.callstack[len(t.callstack)-1].Logs)),
-		}
-		t.callstack[len(t.callstack)-1].Logs = append(t.callstack[len(t.callstack)-1].Logs, log)
-	}
 }
 
-func (t *callTracer) CaptureFault(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
+func (t *CallTracer) CaptureFault(pc uint64, op vm.OpCode, gas, cost uint64, scope *vm.ScopeContext, depth int, err error) {
 }
 
 func clearFailedLogs(cf *callFrame, parentFailed bool) {
@@ -302,7 +273,7 @@ func setStorageChange(cf *callFrame) {
 	}
 }
 
-func (t *callTracer) CaptureTxEnd(restGas uint64) {
+func (t *CallTracer) CaptureTxEnd(restGas uint64) {
 	if len(t.callstack) < 1 {
 		return
 	}
@@ -318,46 +289,137 @@ func (t *callTracer) CaptureTxEnd(restGas uint64) {
 	}
 }
 
-func (t *callTracer) addTraceAndLog(cf *callFrame, traceAddress []int) {
+func (t *CallTracer) OnLog(log *ethtypes.Log) {
+	topics := make([]string, len(log.Topics))
+	for i, topic := range log.Topics {
+		topics[i] = topic.Hex()
+	}
+	var selector string
+	var remainingTopics []string
+
+	if len(topics) > 0 {
+		selector = topics[0]
+		remainingTopics = topics[1:]
+	}
+	l := dtypes.Event{
+		Address:  strings.ToLower(log.Address.Hex()),
+		Selector: selector,
+		Topics:   remainingTopics,
+		Data:     log.Data,
+		Position: int64(len(t.callstack[len(t.callstack)-1].Calls) + len(t.callstack[len(t.callstack)-1].Logs)),
+		Idx:      int(log.Index),
+	}
+	t.callstack[len(t.callstack)-1].Logs = append(t.callstack[len(t.callstack)-1].Logs, l)
+}
+
+func (t *CallTracer) OnAccountSet(addr common.Address, account statedb.Account) {
+	addrhash := crypto.Keccak256Hash(addr.Bytes())
+	t.NewAccounts[addrhash] = account
+}
+
+func (t *CallTracer) OnAccountDelete(addr common.Address) {
+	addrhash := crypto.Keccak256Hash(addr.Bytes())
+	t.DeletedAccounts[addrhash] = struct{}{}
+}
+
+func (t *CallTracer) OnStateSet(addr common.Address, key common.Hash, value []byte) {
+	addrhash := crypto.Keccak256Hash(addr.Bytes())
+	if _, ok := t.StorageDiff[addrhash]; !ok {
+		t.StorageDiff[addrhash] = make(map[common.Hash][]byte)
+	}
+	storageDiff := t.StorageDiff[addrhash]
+	storageDiff[crypto.Keccak256Hash(key.Bytes())] = value
+}
+
+func (t *CallTracer) OnCodeSet(codeHash []byte, code []byte) {
+	t.NewCodes[crypto.Keccak256Hash(codeHash)] = code
+}
+
+func (t *CallTracer) addTraceAndLog(cf *callFrame, traceAddress []int) {
 	for i := range cf.Calls {
 		childAddr := childTraceAddress(traceAddress, i)
 		cf.Calls[i].ParentTraceID = cf.TraceID
 		cf.Calls[i].TraceAddress = childAddr
 		cf.Calls[i].Subtraces = len(cf.Calls[i].Calls)
 		cf.Calls[i].TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[i].PosInParentTrace)})
-		t.traces = append(t.traces, t.ToTrace(&cf.Calls[i]))
 		t.addTraceAndLog(&cf.Calls[i], childAddr)
 	}
+	logIndex := len(t.logs)
 	for i := range cf.Logs {
 		cf.Logs[i].ParentTraceID = cf.TraceID
+		cf.Logs[i].Idx = logIndex + i
 		cf.Logs[i].ID = dtypes.ToHash([]string{cf.Logs[i].ParentTraceID, fmt.Sprintf("%d", cf.Logs[i].Position)})
 		t.logs = append(t.logs, cf.Logs[i])
 	}
+	for i := range cf.Calls {
+		t.traces = append(t.traces, t.ToTrace(&cf.Calls[i]))
+	}
 }
 
-func (t *callTracer) GetTraces() []dtypes.Trace {
+func (t *CallTracer) GetTraces() []dtypes.Trace {
 	res := make([]dtypes.Trace, len(t.traces))
 	copy(res, t.traces)
 	return res
 }
 
-func (t *callTracer) GetLogs() []dtypes.Event {
+func (t *CallTracer) GetLogs() []dtypes.Event {
 	res := make([]dtypes.Event, len(t.logs))
 	copy(res, t.logs)
 	return res
 }
 
-func (t *callTracer) GetResult() (json.RawMessage, error) {
+func (t *CallTracer) ToStorageDiff() dtypes.TransactionStateDiff {
+	stateDiff := dtypes.TransactionStateDiff{}
+	for hash := range t.DeletedAccounts {
+		stateDiff.DeletedAccounts = append(stateDiff.DeletedAccounts, hash)
+	}
+	for addr, account := range t.NewAccounts {
+		stateDiff.NewAccounts = append(stateDiff.NewAccounts, dtypes.NewAccount{
+			Address:  addr,
+			Balance:  account.Balance,
+			Nonce:    account.Nonce,
+			CodeHash: crypto.Keccak256Hash(account.CodeHash),
+		})
+	}
+	for account, storage := range t.StorageDiff {
+		values := make([]dtypes.IndexValuePair, 0)
+		for index, v := range storage {
+			value := uint256.NewInt(0)
+			if len(v) > 0 {
+				value = uint256.NewInt(0).SetBytes(v)
+			}
+			values = append(values, dtypes.IndexValuePair{
+				Index: index,
+				Value: value,
+			})
+		}
+		stateDiff.StorageDiff = append(stateDiff.StorageDiff, dtypes.AccountStorageDiff{
+			Address: account,
+			Values:  values,
+		})
+	}
+	for hash, code := range t.NewCodes {
+		stateDiff.NewCodes = append(stateDiff.NewCodes, dtypes.NewCode{
+			CodeHash: hash,
+			Code:     code,
+		})
+	}
+	return stateDiff
+}
+
+func (t *CallTracer) GetResult() (json.RawMessage, error) {
 	traces := t.GetTraces()
 	events := t.GetLogs()
+	storageDiff := t.ToStorageDiff()
 	result := &dtypes.TraceResult{
-		Traces: traces,
-		Events: events,
+		Traces:    traces,
+		Events:    events,
+		StateDiff: storageDiff,
 	}
 	return json.Marshal(result)
 }
 
-func (t *callTracer) Stop(err error) {
+func (t *CallTracer) Stop(err error) {
 
 }
 
