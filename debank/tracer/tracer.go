@@ -342,7 +342,7 @@ func (t *callTracer) GetTraces() []dtypes.Trace {
 }
 
 func (t *callTracer) GetLogs() []dtypes.Event {
-	res := make([]dtypes.Event, len(t.traces))
+	res := make([]dtypes.Event, len(t.logs))
 	copy(res, t.logs)
 	return res
 }
