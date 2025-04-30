@@ -134,6 +134,7 @@ type callTracer struct {
 	Evm       *vm.EVM
 	ctx       *tracers.Context
 	traces    []dtypes.Trace
+	logs      []dtypes.Event
 }
 
 func NewCallTracer(ctx *tracers.Context) *callTracer {
@@ -199,6 +200,7 @@ func (t *callTracer) CaptureExit(output []byte, usedGas uint64, err error) {
 	call.GasUsed = usedGas
 	call.processOutput(output, err, reverted)
 	if !call.failed() {
+		call.PosInParentTrace = len(t.callstack[size-1].Calls) + len(t.callstack[size-1].Logs)
 		t.callstack[size-1].Calls = append(t.callstack[size-1].Calls, call)
 	}
 }
@@ -223,6 +225,53 @@ func (t *callTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64, sco
 	if op == vm.SSTORE {
 		t.callstack[len(t.callstack)-1].SelfStorageChange = true
 		t.callstack[len(t.callstack)-1].StorageChange = true
+	}
+	if err != nil {
+		return
+	}
+	switch op {
+	case vm.LOG0, vm.LOG1, vm.LOG2, vm.LOG3, vm.LOG4:
+		size := int(op - vm.LOG0)
+
+		stack := scope.Stack
+		stackData := stack.Data()
+
+		// Don't modify the stack
+		mStart := stackData[len(stackData)-1]
+		mSize := stackData[len(stackData)-2]
+		topics := make([]common.Hash, size)
+		for i := 0; i < size; i++ {
+			topic := stackData[len(stackData)-2-(i+1)]
+			topics[i] = topic.Bytes32()
+		}
+
+		data, err := tracers.GetMemoryCopyPadded(scope.Memory, int64(mStart.Uint64()), int64(mSize.Uint64()))
+		if err != nil {
+			// mSize was unrealistically large
+			return
+		}
+
+		var (
+			selector        string
+			remainingTopics []string
+			topicStrings    = make([]string, 0, len(topics))
+		)
+		for _, topic := range topics {
+			topicStrings = append(topicStrings, topic.Hex())
+		}
+		if len(topicStrings) > 0 {
+			selector = topicStrings[0]
+			remainingTopics = topicStrings[1:]
+		}
+
+		log := dtypes.Event{
+			Address:  scope.Contract.Address().Hex(),
+			Selector: selector,
+			Topics:   remainingTopics,
+			Data:     hexutil.Bytes(data),
+			Position: int64(len(t.callstack[len(t.callstack)-1].Calls) + len(t.callstack[len(t.callstack)-1].Logs)),
+		}
+		t.callstack[len(t.callstack)-1].Logs = append(t.callstack[len(t.callstack)-1].Logs, log)
 	}
 }
 
@@ -265,20 +314,24 @@ func (t *callTracer) CaptureTxEnd(restGas uint64) {
 		topCall.TraceAddress = []int{}
 		topCall.Subtraces = len(topCall.Calls)
 		t.traces = append(t.traces, t.ToTrace(topCall))
-		t.addTrace(topCall, []int{})
+		t.addTraceAndLog(topCall, []int{})
 	}
 }
 
-func (t *callTracer) addTrace(cf *callFrame, traceAddress []int) {
+func (t *callTracer) addTraceAndLog(cf *callFrame, traceAddress []int) {
 	for i := range cf.Calls {
 		childAddr := childTraceAddress(traceAddress, i)
 		cf.Calls[i].ParentTraceID = cf.TraceID
-		cf.Calls[i].PosInParentTrace = i
 		cf.Calls[i].TraceAddress = childAddr
 		cf.Calls[i].Subtraces = len(cf.Calls[i].Calls)
 		cf.Calls[i].TraceID = dtypes.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[i].PosInParentTrace)})
 		t.traces = append(t.traces, t.ToTrace(&cf.Calls[i]))
-		t.addTrace(&cf.Calls[i], childAddr)
+		t.addTraceAndLog(&cf.Calls[i], childAddr)
+	}
+	for i := range cf.Logs {
+		cf.Logs[i].ParentTraceID = cf.TraceID
+		cf.Logs[i].ID = dtypes.ToHash([]string{cf.Logs[i].ParentTraceID, fmt.Sprintf("%d", cf.Logs[i].Position)})
+		t.logs = append(t.logs, cf.Logs[i])
 	}
 }
 
@@ -288,11 +341,18 @@ func (t *callTracer) GetTraces() []dtypes.Trace {
 	return res
 }
 
+func (t *callTracer) GetLogs() []dtypes.Event {
+	res := make([]dtypes.Event, len(t.traces))
+	copy(res, t.logs)
+	return res
+}
+
 func (t *callTracer) GetResult() (json.RawMessage, error) {
 	traces := t.GetTraces()
+	events := t.GetLogs()
 	result := &dtypes.TraceResult{
 		Traces: traces,
-		Events: nil,
+		Events: events,
 	}
 	return json.Marshal(result)
 }
