@@ -629,7 +629,7 @@ func (k *Keeper) traceTx(
 	if traceConfig.Tracer == dtracer.Name {
 		cfg.StateDb = statedb.New(ctx, k, txConfig)
 		callTracer := tracer.(*dtracer.CallTracer)
-		cfg.StateDb.SetHooks(statedb.Hooks{
+		cfg.StateDb.SetHooks(&statedb.Hooks{
 			OnAccountSet:    callTracer.OnAccountSet,
 			OnAccountDelete: callTracer.OnAccountDelete,
 			OnStateSet:      callTracer.OnStateSet,

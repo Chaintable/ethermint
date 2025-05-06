@@ -82,7 +82,7 @@ type StateDB struct {
 	// events emitted by native action
 	nativeEvents sdk.Events
 
-	hooks Hooks
+	hooks *Hooks
 }
 
 // New creates a new state from a given trie.
@@ -132,7 +132,9 @@ func (s *StateDB) AddLog(log *ethtypes.Log) {
 	log.BlockHash = s.txConfig.BlockHash
 	log.TxIndex = s.txConfig.TxIndex
 	log.Index = s.txConfig.LogIndex + uint(len(s.logs))
-	s.hooks.OnLog(log)
+	if s.hooks != nil && s.hooks.OnLog != nil {
+		s.hooks.OnLog(log)
+	}
 	s.logs = append(s.logs, log)
 }
 
@@ -597,16 +599,22 @@ func (s *StateDB) Commit() error {
 			if err := s.keeper.DeleteAccount(s.ctx, obj.Address()); err != nil {
 				return errorsmod.Wrap(err, "failed to delete account")
 			}
-			s.hooks.OnAccountDelete(obj.Address())
+			if s.hooks != nil && s.hooks.OnAccountDelete != nil {
+				s.hooks.OnAccountDelete(obj.Address())
+			}
 		} else {
 			if obj.code != nil && obj.dirtyCode {
 				s.keeper.SetCode(s.ctx, obj.CodeHash(), obj.code)
-				s.hooks.OnCodeSet(obj.CodeHash(), obj.code)
+				if s.hooks != nil && s.hooks.OnCodeSet != nil {
+					s.hooks.OnCodeSet(obj.CodeHash(), obj.code)
+				}
 			}
 			if err := s.keeper.SetAccount(s.ctx, obj.Address(), obj.account); err != nil {
 				return errorsmod.Wrap(err, "failed to set account")
 			}
-			s.hooks.OnAccountSet(obj.Address(), obj.account)
+			if s.hooks != nil && s.hooks.OnAccountSet != nil {
+				s.hooks.OnAccountSet(obj.Address(), obj.account)
+			}
 
 			for _, key := range obj.dirtyStorage.SortedKeys() {
 				value := obj.dirtyStorage[key]
@@ -615,7 +623,9 @@ func (s *StateDB) Commit() error {
 					continue
 				}
 				s.keeper.SetState(s.ctx, obj.Address(), key, value.Bytes())
-				s.hooks.OnStateSet(obj.Address(), key, value.Bytes())
+				if s.hooks != nil && s.hooks.OnStateSet != nil {
+					s.hooks.OnStateSet(obj.Address(), key, value.Bytes())
+				}
 			}
 		}
 	}
@@ -646,6 +656,6 @@ func (s *StateDB) emitNativeEvents(contract common.Address, converter EventConve
 	}
 }
 
-func (s *StateDB) SetHooks(hooks Hooks) {
+func (s *StateDB) SetHooks(hooks *Hooks) {
 	s.hooks = hooks
 }
