@@ -91,6 +91,19 @@ type FeeHistoryResult struct {
 	GasUsedRatio []float64        `json:"gasUsedRatio"`
 }
 
+// BlockOverrides is a set of header fields to override.
+type BlockOverrides struct {
+	Number        *hexutil.Big
+	Difficulty    *hexutil.Big
+	Time          *hexutil.Uint64
+	GasLimit      *hexutil.Uint64
+	FeeRecipient  *common.Address
+	PrevRandao    *common.Hash
+	BaseFeePerGas *hexutil.Big
+	BlobBaseFee   *hexutil.Big
+	BeaconRoot    *common.Hash
+}
+
 // SignTransactionResult represents a RLP encoded signed transaction.
 type SignTransactionResult struct {
 	Raw hexutil.Bytes         `json:"raw"`

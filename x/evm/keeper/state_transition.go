@@ -34,6 +34,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
+	dtracer "github.com/evmos/ethermint/debank/tracer"
 )
 
 // NewEVM generates a go-ethereum VM from the provided Message fields and the chain parameters
@@ -330,13 +331,22 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 	}
 
 	stateDB := statedb.New(ctx, k, txConfig)
+	if dt, ok := tracer.(*dtracer.CallTracer); ok {
+		stateDB.SetHooks(&statedb.Hooks{
+			OnAccountSet:    dt.OnAccountSet,
+			OnAccountDelete: dt.OnAccountDelete,
+			OnStateSet:      dt.OnStateSet,
+			OnCodeSet:       dt.OnCodeSet,
+			OnLog:           dt.OnLog,
+		})
+	}
 	evm := k.NewEVM(ctx, msg, cfg, tracer, stateDB)
 
 	leftoverGas := msg.Gas()
 
 	// Allow the tracer captures the tx level events, mainly the gas consumption.
 	vmCfg := evm.Config()
-	if vmCfg.Debug {
+	if vmCfg.Debug || tracer != nil {
 		vmCfg.Tracer.CaptureTxStart(leftoverGas)
 		defer func() {
 			vmCfg.Tracer.CaptureTxEnd(leftoverGas)

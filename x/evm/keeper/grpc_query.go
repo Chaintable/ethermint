@@ -39,6 +39,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	ethparams "github.com/ethereum/go-ethereum/params"
 
+	dtracer "github.com/evmos/ethermint/debank/tracer"
 	ethermint "github.com/evmos/ethermint/types"
 	"github.com/evmos/ethermint/x/evm/statedb"
 	"github.com/evmos/ethermint/x/evm/types"
@@ -578,7 +579,9 @@ func (k *Keeper) traceTx(
 		TxHash:    txConfig.TxHash,
 	}
 
-	if traceConfig.Tracer != "" {
+	if traceConfig.Tracer == dtracer.Name {
+		tracer = dtracer.NewCallTracer(tCtx)
+	} else if traceConfig.Tracer != "" {
 		if tracer, err = tracers.New(traceConfig.Tracer, tCtx, tracerJSONConfig); err != nil {
 			return nil, 0, status.Error(codes.Internal, err.Error())
 		}
