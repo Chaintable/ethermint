@@ -51,6 +51,10 @@ type TransactionArgs struct {
 	// Introduced by AccessListTxType transaction.
 	AccessList *ethtypes.AccessList `json:"accessList,omitempty"`
 	ChainID    *hexutil.Big         `json:"chainId,omitempty"`
+
+	// DeBank batch simulation support
+	BlockHash *common.Hash      `json:"blockHash,omitempty"`
+	Args      []TransactionArgs `json:"args,omitempty"`
 }
 
 // String return the struct in a string format
