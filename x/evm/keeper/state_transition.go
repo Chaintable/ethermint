@@ -430,6 +430,11 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 	// reset leftoverGas, to be used by the tracer
 	leftoverGas = msg.Gas() - gasUsed
 
+	// Populate debank tracer transaction data from core.Message
+	if dt, ok := tracer.(*dtracer.CallTracer); ok {
+		dt.OnTxEndFromMsg(msg, txConfig.TxHash, int64(txConfig.TxIndex), big.NewInt(int64(gasUsed)), cfg.BaseFee, vmErr == nil)
+	}
+
 	return &types.MsgEthereumTxResponse{
 		GasUsed: gasUsed,
 		VmError: vmError,
