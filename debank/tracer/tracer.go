@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -381,6 +382,34 @@ func (t *CallTracer) OnCodeSet(codeHash []byte, code []byte) {
 
 func (t *CallTracer) OnTxEnd(from common.Address, tx *ethtypes.Transaction, baseFee *big.Int, res *types.MsgEthereumTxResponse) {
 	t.transaction = BuildPipelineTransaction(tx, int64(t.ctx.TxIndex), from, big.NewInt(int64(res.GasUsed)), baseFee, !res.Failed())
+}
+
+// OnTxEndFromMsg builds the transaction from core.Message when the original
+// *types.Transaction is not available (e.g. in ApplyMessageWithConfig).
+func (t *CallTracer) OnTxEndFromMsg(msg core.Message, txHash common.Hash, txIndex int64, gasUsed *big.Int, baseFee *big.Int, success bool) {
+	var to common.Address
+	if msg.To() != nil {
+		to = *msg.To()
+	}
+	t.transaction = dtypes.Transaction{
+		ID:               txHash.Hex(),
+		From:             strings.ToLower(msg.From().Hex()),
+		To:               strings.ToLower(to.Hex()),
+		Gas:              big.NewInt(int64(msg.Gas())),
+		GasUsed:          gasUsed,
+		GasPrice:         msg.GasPrice(),
+		Status:           success,
+		GasFeeCap:        msg.GasFeeCap(),
+		GasTipCap:        msg.GasTipCap(),
+		Input:            msg.Data(),
+		Nonce:            big.NewInt(int64(msg.Nonce())),
+		TransactionIndex: txIndex,
+		Value:            (*hexutil.Big)(msg.Value()),
+	}
+	if baseFee != nil && t.transaction.GasFeeCap != nil && t.transaction.GasTipCap != nil {
+		price := types.EffectiveGasPrice(baseFee, t.transaction.GasFeeCap, t.transaction.GasTipCap)
+		t.transaction.GasPrice = price
+	}
 }
 
 func (t *CallTracer) GetTraces() []dtypes.Trace {
