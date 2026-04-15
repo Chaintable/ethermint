@@ -9,9 +9,8 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
+	"strings"
 
-	"github.com/cosmos/cosmos-sdk/store/prefix"
-	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -25,7 +24,7 @@ import (
 )
 
 // NonEVMStateDiffSentinelKey marks a TxTraceResult.Result that carries the
-// block-level IAVL state diff (for non-EVM-path state changes).
+// block-level state diff (for non-EVM-path state changes).
 const NonEVMStateDiffSentinelKey = "_non_evm_state_diff"
 
 // nonEVMStateDiffSentinel is the structure JSON-serialized into a TxTraceResult.Result
@@ -34,11 +33,17 @@ type nonEVMStateDiffSentinel struct {
 	NonEVMStateDiff *dtypes.TransactionStateDiff `json:"_non_evm_state_diff"`
 }
 
-// buildNonEVMStateDiffSentinel computes block-level IAVL state diff (parent -> current)
-// and packages it into a sentinel TxTraceResult that can be appended to the gRPC
-// TraceBlock response. Returns nil when the feature is disabled or computation fails.
+// buildNonEVMStateDiffSentinel computes a focused block-level state diff
+// (parent -> current) and packages it into a sentinel TxTraceResult that is
+// appended to the gRPC TraceBlock response. Returns nil when the feature is
+// disabled, no storage to watch, or computation fails.
 //
-// Disable via env var: ETHERMINT_DISABLE_NON_EVM_DIFF=1
+// Operator config (env vars):
+//   - ETHERMINT_NON_EVM_WATCH_ADDRS (comma-separated hex addresses):
+//     contract storage to diff. Typical: kava evmutil ERC20 contracts.
+//     If empty, no storage diff is done (cheap account diff still runs).
+//   - ETHERMINT_DISABLE_NON_EVM_DIFF=1: emergency kill switch, short-circuits
+//     this whole function.
 func (k *Keeper) buildNonEVMStateDiffSentinel(ctx sdk.Context, blockNumber int64) *types.TxTraceResult {
 	if os.Getenv("ETHERMINT_DISABLE_NON_EVM_DIFF") == "1" {
 		return nil
@@ -47,10 +52,12 @@ func (k *Keeper) buildNonEVMStateDiffSentinel(ctx sdk.Context, blockNumber int64
 		return nil
 	}
 
+	watch := parseWatchContractsEnv()
+
 	parentCtx := ctx.WithBlockHeight(blockNumber - 1)
 	currentCtx := ctx.WithBlockHeight(blockNumber)
 
-	diff := k.DiffEVMState(parentCtx, currentCtx)
+	diff := k.DiffEVMState(parentCtx, currentCtx, watch)
 	if diffEmpty(diff) {
 		return nil
 	}
@@ -73,24 +80,22 @@ func diffEmpty(d dtypes.TransactionStateDiff) bool {
 		len(d.NewCodes) == 0
 }
 
-// DiffEVMState computes the full EVM state diff between two contexts (parent vs current).
-// It is intended to be invoked at the end of TraceBlock to补capture state changes that
-// happened outside the EVM transaction code path (e.g. BeginBlocker / EndBlocker calls
-// that mutate EVM contract storage via evmutil.CallEVMWithData).
+// DiffEVMState computes a focused EVM state diff between two contexts.
+//
+// To make this affordable on an archive node (a full scan of the EVM module's
+// storage prefix takes minutes), the storage diff is restricted to
+// watchContracts. Account-level diff (balance / nonce / codeHash) runs over all
+// EthAccounts and is cheap relative to storage iteration.
 //
 // Returned TransactionStateDiff fields:
 //   - NewAccounts: accounts whose nonce / balance / codeHash differ from parent.
 //   - DeletedAccounts: accounts existing in parent but missing in current.
-//   - StorageDiff: per-contract storage slots whose values differ from parent.
-//   - NewCodes: code blobs (codeHash -> code) referenced by NewAccounts that are
-//     newly added in current.
+//   - StorageDiff: for each watched contract, slots whose values differ.
+//   - NewCodes: code blobs (codeHash -> code) for newly deployed contracts
+//     detected via NewAccounts.
 //
 // Address fields use crypto.Keccak256Hash(addr) to match the existing pipeline encoding.
-//
-// IMPORTANT: This function performs a full scan of the EVM module's storage prefix
-// at both heights and a full account iteration. Cost is O(EVM state size).
-// Only use on archive nodes (pruning="nothing").
-func (k *Keeper) DiffEVMState(parentCtx, currentCtx sdk.Context) dtypes.TransactionStateDiff {
+func (k *Keeper) DiffEVMState(parentCtx, currentCtx sdk.Context, watchContracts []common.Address) dtypes.TransactionStateDiff {
 	diff := dtypes.TransactionStateDiff{
 		NewAccounts:     make([]dtypes.NewAccount, 0),
 		DeletedAccounts: make([]common.Hash, 0),
@@ -108,30 +113,31 @@ func (k *Keeper) DiffEVMState(parentCtx, currentCtx sdk.Context) dtypes.Transact
 		}
 		prev := k.GetAccount(parentCtx, addr)
 
-		if accountChanged(prev, curr) {
-			balance := uint256.NewInt(0)
-			if curr.Balance != nil {
-				balance = uint256.NewInt(0).SetBytes(curr.Balance.Bytes())
+		if !accountChanged(prev, curr) {
+			continue
+		}
+		balance := uint256.NewInt(0)
+		if curr.Balance != nil {
+			balance = uint256.NewInt(0).SetBytes(curr.Balance.Bytes())
+		}
+		diff.NewAccounts = append(diff.NewAccounts, dtypes.NewAccount{
+			Address:  crypto.Keccak256Hash(addr.Bytes()),
+			Balance:  balance,
+			Nonce:    curr.Nonce,
+			CodeHash: common.BytesToHash(curr.CodeHash),
+		})
+		if curr.IsContract() {
+			prevCodeHash := types.EmptyCodeHash
+			if prev != nil {
+				prevCodeHash = prev.CodeHash
 			}
-			diff.NewAccounts = append(diff.NewAccounts, dtypes.NewAccount{
-				Address:  crypto.Keccak256Hash(addr.Bytes()),
-				Balance:  balance,
-				Nonce:    curr.Nonce,
-				CodeHash: common.BytesToHash(curr.CodeHash),
-			})
-			if curr.IsContract() {
-				prevCodeHash := types.EmptyCodeHash
-				if prev != nil {
-					prevCodeHash = prev.CodeHash
-				}
-				if !bytes.Equal(curr.CodeHash, prevCodeHash) {
-					code := k.GetCode(currentCtx, common.BytesToHash(curr.CodeHash))
-					if len(code) > 0 {
-						diff.NewCodes = append(diff.NewCodes, dtypes.NewCode{
-							CodeHash: common.BytesToHash(curr.CodeHash),
-							Code:     code,
-						})
-					}
+			if !bytes.Equal(curr.CodeHash, prevCodeHash) {
+				code := k.GetCode(currentCtx, common.BytesToHash(curr.CodeHash))
+				if len(code) > 0 {
+					diff.NewCodes = append(diff.NewCodes, dtypes.NewCode{
+						CodeHash: common.BytesToHash(curr.CodeHash),
+						Code:     code,
+					})
 				}
 			}
 		}
@@ -145,8 +151,15 @@ func (k *Keeper) DiffEVMState(parentCtx, currentCtx sdk.Context) dtypes.Transact
 			crypto.Keccak256Hash(addr.Bytes()))
 	}
 
-	for _, sd := range diffStoragePrefix(parentCtx, currentCtx, k.storeKey) {
-		diff.StorageDiff = append(diff.StorageDiff, sd)
+	for _, addr := range watchContracts {
+		slots := diffContractStorage(parentCtx, currentCtx, k, addr)
+		if len(slots) == 0 {
+			continue
+		}
+		diff.StorageDiff = append(diff.StorageDiff, dtypes.AccountStorageDiff{
+			Address: crypto.Keccak256Hash(addr.Bytes()),
+			Values:  slots,
+		})
 	}
 
 	return diff
@@ -186,70 +199,59 @@ func accountChanged(prev, curr *statedb.Account) bool {
 	return prevBal.Cmp(currBal) != 0
 }
 
-// diffStoragePrefix iterates the EVM module storage prefix on both contexts and
-// returns per-contract slot diffs. Layout: KeyPrefixStorage / address(20B) / slot(32B) -> value.
-//
-// Single-pass merge over two sorted iterators avoids loading entire state into memory.
-func diffStoragePrefix(parentCtx, currentCtx sdk.Context, storeKey storetypes.StoreKey) []dtypes.AccountStorageDiff {
-	parentStore := prefix.NewStore(parentCtx.KVStore(storeKey), types.KeyPrefixStorage)
-	currentStore := prefix.NewStore(currentCtx.KVStore(storeKey), types.KeyPrefixStorage)
+// diffContractStorage returns the list of slots whose value in `current` differs
+// from `parent` for a single contract. Uses ForEachStorage at both contexts and
+// merges results — O(contract storage size), i.e. only the state of one address.
+func diffContractStorage(parentCtx, currentCtx sdk.Context, k *Keeper, addr common.Address) []dtypes.IndexValuePair {
+	prev := map[common.Hash]common.Hash{}
+	k.ForEachStorage(parentCtx, addr, func(key, value common.Hash) bool {
+		prev[key] = value
+		return true
+	})
+	curr := map[common.Hash]common.Hash{}
+	k.ForEachStorage(currentCtx, addr, func(key, value common.Hash) bool {
+		curr[key] = value
+		return true
+	})
 
-	pIter := parentStore.Iterator(nil, nil)
-	defer pIter.Close()
-	cIter := currentStore.Iterator(nil, nil)
-	defer cIter.Close()
-
-	// per-address bucket: addr -> []IndexValuePair
-	buckets := make(map[common.Address][]dtypes.IndexValuePair)
-
-	addPair := func(addrSlot []byte, value []byte) {
-		if len(addrSlot) < common.AddressLength+common.HashLength {
-			return
-		}
-		addr := common.BytesToAddress(addrSlot[:common.AddressLength])
-		slot := common.BytesToHash(addrSlot[common.AddressLength:])
-		v := uint256.NewInt(0)
-		if len(value) > 0 {
-			v = uint256.NewInt(0).SetBytes(value)
-		}
-		buckets[addr] = append(buckets[addr], dtypes.IndexValuePair{
-			Index: slot,
-			Value: v,
-		})
-	}
-
-	for pIter.Valid() && cIter.Valid() {
-		pk, ck := pIter.Key(), cIter.Key()
-		cmp := bytes.Compare(pk, ck)
-		switch {
-		case cmp == 0:
-			if !bytes.Equal(pIter.Value(), cIter.Value()) {
-				addPair(ck, cIter.Value())
+	out := make([]dtypes.IndexValuePair, 0)
+	for key, cval := range curr {
+		pval, existed := prev[key]
+		if !existed || pval != cval {
+			v := uint256.NewInt(0)
+			if cval != (common.Hash{}) {
+				v = uint256.NewInt(0).SetBytes(cval.Bytes())
 			}
-			pIter.Next()
-			cIter.Next()
-		case cmp < 0:
-			addPair(pk, nil)
-			pIter.Next()
-		default: // cmp > 0
-			addPair(ck, cIter.Value())
-			cIter.Next()
+			out = append(out, dtypes.IndexValuePair{Index: key, Value: v})
 		}
 	}
-	for ; pIter.Valid(); pIter.Next() {
-		addPair(pIter.Key(), nil)
-	}
-	for ; cIter.Valid(); cIter.Next() {
-		addPair(cIter.Key(), cIter.Value())
-	}
-
-	out := make([]dtypes.AccountStorageDiff, 0, len(buckets))
-	for addr, values := range buckets {
-		out = append(out, dtypes.AccountStorageDiff{
-			Address: crypto.Keccak256Hash(addr.Bytes()),
-			Values:  values,
-		})
+	for key := range prev {
+		if _, existed := curr[key]; !existed {
+			out = append(out, dtypes.IndexValuePair{Index: key, Value: uint256.NewInt(0)})
+		}
 	}
 	return out
 }
 
+// parseWatchContractsEnv reads a comma-separated hex address list from env var
+// ETHERMINT_NON_EVM_WATCH_ADDRS. Empty / invalid addresses are skipped.
+// Example: ETHERMINT_NON_EVM_WATCH_ADDRS=0xfa9343c3...,0x...
+func parseWatchContractsEnv() []common.Address {
+	raw := strings.TrimSpace(os.Getenv("ETHERMINT_NON_EVM_WATCH_ADDRS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]common.Address, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !common.IsHexAddress(p) {
+			continue
+		}
+		out = append(out, common.HexToAddress(p))
+	}
+	return out
+}
