@@ -33,19 +33,25 @@ type nonEVMStateDiffSentinel struct {
 	NonEVMStateDiff *dtypes.TransactionStateDiff `json:"_non_evm_state_diff"`
 }
 
-// buildNonEVMStateDiffSentinel computes a focused block-level state diff
-// (parent -> current) and packages it into a sentinel TxTraceResult that is
-// appended to the gRPC TraceBlock response. Returns nil when the feature is
-// disabled, no storage to watch, or computation fails.
+// buildNonEVMStateDiffSentinel is intended to compute a block-level state diff
+// capturing non-EVM-path changes (BeginBlocker/EndBlocker via evmutil, etc.),
+// but the implementation is NOT YET FUNCTIONAL:
 //
-// Operator config (env vars):
-//   - ETHERMINT_NON_EVM_WATCH_ADDRS (comma-separated hex addresses):
-//     contract storage to diff. Typical: kava evmutil ERC20 contracts.
-//     If empty, no storage diff is done (cheap account diff still runs).
-//   - ETHERMINT_DISABLE_NON_EVM_DIFF=1: emergency kill switch, short-circuits
-//     this whole function.
+//  1. `ctx.WithBlockHeight(h)` only changes metadata; the KVStore it references
+//     still points to the current state. We'd need rootmulti.CacheMultiStoreWithVersion
+//     (which requires BaseApp access not available from within the keeper).
+//  2. Even with correct historical store access, ForEachStorage-based diff on a
+//     large archive node is O(storage size) per contract (hundreds of thousands
+//     of IOPS) and takes minutes per call.
+//
+// Until we have a proper fix (likely: hook evmutil.CallEVMWithData to persist
+// dirty contracts to a per-block cache during normal block production, then read
+// from cache here), this function is DISABLED by default. Opt in via env var
+// ONLY for manual debugging — it will hang on large chains.
+//
+// Opt-in: ETHERMINT_ENABLE_NON_EVM_DIFF=1
 func (k *Keeper) buildNonEVMStateDiffSentinel(ctx sdk.Context, blockNumber int64) *types.TxTraceResult {
-	if os.Getenv("ETHERMINT_DISABLE_NON_EVM_DIFF") == "1" {
+	if os.Getenv("ETHERMINT_ENABLE_NON_EVM_DIFF") != "1" {
 		return nil
 	}
 	if blockNumber <= 1 {
