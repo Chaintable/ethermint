@@ -92,6 +92,11 @@ enable-indexer = {{ .JSONRPC.EnableIndexer }}
 # Prometheus metrics path: /debug/metrics/prometheus
 metrics-address = "{{ .JSONRPC.MetricsAddress }}"
 
+# EnableNonEVMStateDiff enables block-level IAVL state diff in trace_debankBlock to
+# capture state changes from non-EVM paths (e.g. BeginBlocker/EndBlocker via evmutil).
+# Only effective on archive nodes (pruning="nothing"). Default: true.
+enable-non-evm-state-diff = {{ .JSONRPC.EnableNonEVMStateDiff }}
+
 ###############################################################################
 ###                             TLS Configuration                           ###
 ###############################################################################
