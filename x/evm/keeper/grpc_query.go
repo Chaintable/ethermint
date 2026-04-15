@@ -621,6 +621,17 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		results = append(results, &result)
 	}
 
+	// For debank tracer, append a sentinel TxTraceResult carrying the block-level
+	// IAVL state diff so that DebankBlockRaw can補capture state changes from
+	// non-EVM paths (BeginBlocker/EndBlocker via evmutil etc).
+	// This keeps gRPC schema unchanged: legacy callers see one extra "result" with
+	// an unrecognized payload they can safely ignore.
+	if req.TraceConfig != nil && req.TraceConfig.Tracer == dtracer.Name {
+		if sentinel := k.buildNonEVMStateDiffSentinel(ctx, req.BlockNumber); sentinel != nil {
+			results = append(results, sentinel)
+		}
+	}
+
 	resultData, err := json.Marshal(results)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

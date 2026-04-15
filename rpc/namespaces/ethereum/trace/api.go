@@ -130,6 +130,10 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 			fromToAddress[*transaction.To] = struct{}{}
 		}
 	}
+	// nonEVMStateDiff is the block-level IAVL state diff appended by the gRPC TraceBlock
+	// as a sentinel result; used to capture state changes from non-EVM paths
+	// (BeginBlocker/EndBlocker via evmutil etc).
+	var nonEVMStateDiff *dtypes.TransactionStateDiff
 	for _, result := range traceResults {
 		if result.Error != "" {
 			api.logger.Error("trace result error", "error", result.Error)
@@ -139,6 +143,16 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		if !ok {
 			api.logger.Error("failed to parse trace result: %+v", result)
 			return nil, status.Error(codes.Internal, "trace result parse error")
+		}
+		// Detect non-EVM state diff sentinel.
+		if rawDiff, isSentinel := traceResultRaw["_non_evm_state_diff"]; isSentinel {
+			parsed, err := decodeNonEVMStateDiff(rawDiff)
+			if err != nil {
+				api.logger.Error("failed to decode non-evm state diff", "err", err)
+				continue
+			}
+			nonEVMStateDiff = parsed
+			continue
 		}
 		decoded, err := json.Marshal(traceResultRaw)
 		if err != nil {
@@ -155,6 +169,11 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		blockFile.ErrorTraces = append(blockFile.ErrorTraces, traceResult.ErrorTraces...)
 		blockFile.StorageContracts = append(blockFile.StorageContracts, traceResult.StorageContracts...)
 		transactionStates = append(transactionStates, traceResult.StateDiff)
+	}
+	// Append the IAVL diff LAST so BuildBlockStateDiff's per-address overwrite
+	// semantics make it the source of truth (IAVL diff reflects the actual final state).
+	if nonEVMStateDiff != nil {
+		transactionStates = append(transactionStates, *nonEVMStateDiff)
 	}
 	for i := range blockFile.Events {
 		blockFile.Events[i].LogIndex = int64(i)
@@ -195,6 +214,24 @@ func (api API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNumb
 		StateDiff:      data,
 		ValidationHash: output.ValidationHash,
 	}, nil
+}
+
+// decodeNonEVMStateDiff converts the JSON-decoded sentinel payload (already a
+// map[string]interface{}) into a TransactionStateDiff via re-marshal + unmarshal.
+// The double round-trip is needed because traceResults arrive as generic JSON.
+func decodeNonEVMStateDiff(raw interface{}) (*dtypes.TransactionStateDiff, error) {
+	if raw == nil {
+		return nil, fmt.Errorf("empty diff")
+	}
+	buf, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var diff dtypes.TransactionStateDiff
+	if err := json.Unmarshal(buf, &diff); err != nil {
+		return nil, err
+	}
+	return &diff, nil
 }
 
 func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, newAccount []dtypes.NewAccount, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []string, error) {

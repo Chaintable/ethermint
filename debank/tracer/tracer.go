@@ -1,10 +1,12 @@
 package tracer
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 
@@ -446,10 +448,19 @@ func (t *CallTracer) GetStorageAddress() []string {
 
 func (t *CallTracer) ToStorageDiff() dtypes.TransactionStateDiff {
 	stateDiff := dtypes.TransactionStateDiff{}
-	for hash := range t.DeletedAccounts {
+
+	deletedAccounts := sortedHashes(t.DeletedAccounts)
+	for _, hash := range deletedAccounts {
 		stateDiff.DeletedAccounts = append(stateDiff.DeletedAccounts, hash)
 	}
-	for addr, account := range t.NewAccounts {
+
+	newAccountAddrs := make([]common.Hash, 0, len(t.NewAccounts))
+	for addr := range t.NewAccounts {
+		newAccountAddrs = append(newAccountAddrs, addr)
+	}
+	sortHashes(newAccountAddrs)
+	for _, addr := range newAccountAddrs {
+		account := t.NewAccounts[addr]
 		balance := uint256.NewInt(0)
 		if account.Balance != nil {
 			balance = uint256.NewInt(0).SetBytes(account.Balance.Bytes())
@@ -461,9 +472,22 @@ func (t *CallTracer) ToStorageDiff() dtypes.TransactionStateDiff {
 			CodeHash: common.BytesToHash(account.CodeHash),
 		})
 	}
-	for account, storage := range t.StorageDiff {
-		values := make([]dtypes.IndexValuePair, 0)
-		for index, v := range storage {
+
+	storageAddrs := make([]common.Hash, 0, len(t.StorageDiff))
+	for account := range t.StorageDiff {
+		storageAddrs = append(storageAddrs, account)
+	}
+	sortHashes(storageAddrs)
+	for _, account := range storageAddrs {
+		storage := t.StorageDiff[account]
+		indices := make([]common.Hash, 0, len(storage))
+		for index := range storage {
+			indices = append(indices, index)
+		}
+		sortHashes(indices)
+		values := make([]dtypes.IndexValuePair, 0, len(indices))
+		for _, index := range indices {
+			v := storage[index]
 			value := uint256.NewInt(0)
 			if len(v) > 0 {
 				value = uint256.NewInt(0).SetBytes(v)
@@ -478,13 +502,36 @@ func (t *CallTracer) ToStorageDiff() dtypes.TransactionStateDiff {
 			Values:  values,
 		})
 	}
-	for hash, code := range t.NewCodes {
+
+	codeHashes := make([]common.Hash, 0, len(t.NewCodes))
+	for hash := range t.NewCodes {
+		codeHashes = append(codeHashes, hash)
+	}
+	sortHashes(codeHashes)
+	for _, hash := range codeHashes {
 		stateDiff.NewCodes = append(stateDiff.NewCodes, dtypes.NewCode{
 			CodeHash: hash,
-			Code:     code,
+			Code:     t.NewCodes[hash],
 		})
 	}
 	return stateDiff
+}
+
+// sortHashes sorts a slice of common.Hash in ascending byte order in place.
+func sortHashes(hashes []common.Hash) {
+	sort.Slice(hashes, func(i, j int) bool {
+		return bytes.Compare(hashes[i][:], hashes[j][:]) < 0
+	})
+}
+
+// sortedHashes returns a sorted copy of keys from a map[common.Hash]struct{}.
+func sortedHashes(m map[common.Hash]struct{}) []common.Hash {
+	out := make([]common.Hash, 0, len(m))
+	for h := range m {
+		out = append(out, h)
+	}
+	sortHashes(out)
+	return out
 }
 
 func (t *CallTracer) GetResult() (json.RawMessage, error) {

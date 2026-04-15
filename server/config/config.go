@@ -130,6 +130,11 @@ type JSONRPCConfig struct {
 	EnableIndexer bool `mapstructure:"enable-indexer"`
 	// MetricsAddress defines the metrics server to listen on
 	MetricsAddress string `mapstructure:"metrics-address"`
+	// EnableNonEVMStateDiff enables the block-level IAVL state diff that captures
+	// state changes from non-EVM paths (e.g. BeginBlocker/EndBlocker via evmutil).
+	// When false, trace_debankBlock falls back to the legacy tracer-only behavior.
+	// Only effective on archive nodes (pruning="nothing").
+	EnableNonEVMStateDiff bool `mapstructure:"enable-non-evm-state-diff"`
 }
 
 // TLSConfig defines the certificate and matching private key for the server.
@@ -230,8 +235,9 @@ func DefaultJSONRPCConfig() *JSONRPCConfig {
 		HTTPIdleTimeout:     DefaultHTTPIdleTimeout,
 		AllowUnprotectedTxs: DefaultAllowUnprotectedTxs,
 		MaxOpenConnections:  DefaultMaxOpenConnections,
-		EnableIndexer:       false,
-		MetricsAddress:      DefaultJSONRPCMetricsAddress,
+		EnableIndexer:         false,
+		MetricsAddress:        DefaultJSONRPCMetricsAddress,
+		EnableNonEVMStateDiff: true,
 	}
 }
 
@@ -339,8 +345,9 @@ func GetConfig(v *viper.Viper) (Config, error) {
 			HTTPTimeout:        v.GetDuration("json-rpc.http-timeout"),
 			HTTPIdleTimeout:    v.GetDuration("json-rpc.http-idle-timeout"),
 			MaxOpenConnections: v.GetInt("json-rpc.max-open-connections"),
-			EnableIndexer:      v.GetBool("json-rpc.enable-indexer"),
-			MetricsAddress:     v.GetString("json-rpc.metrics-address"),
+			EnableIndexer:         v.GetBool("json-rpc.enable-indexer"),
+			MetricsAddress:        v.GetString("json-rpc.metrics-address"),
+			EnableNonEVMStateDiff: !v.IsSet("json-rpc.enable-non-evm-state-diff") || v.GetBool("json-rpc.enable-non-evm-state-diff"),
 		},
 		TLS: TLSConfig{
 			CertificatePath: v.GetString("tls.certificate-path"),
