@@ -130,6 +130,14 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 			fromToAddress[*transaction.To] = struct{}{}
 		}
 	}
+	// Include addresses affected by Cosmos-native operations
+	// (BeginBlocker/EndBlocker: staking rewards, kavadist, IBC transfers, etc.)
+	// These balance changes are invisible to the EVM tracer.
+	cosmosAddrs := extractCosmosAffectedAddressesFromBlock(
+		blockRes.BeginBlockEvents, blockRes.EndBlockEvents, blockRes.TxsResults)
+	for addr := range cosmosAddrs {
+		fromToAddress[addr] = struct{}{}
+	}
 	// nonEVMStateDiff is the block-level IAVL state diff appended by the gRPC TraceBlock
 	// as a sentinel result; used to capture state changes from non-EVM paths
 	// (BeginBlocker/EndBlocker via evmutil etc).

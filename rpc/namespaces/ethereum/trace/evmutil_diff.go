@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	abci "github.com/cometbft/cometbft/abci/types"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
@@ -30,19 +30,75 @@ const (
 // evmutilEvent is a parsed evmutil conversion event.
 type evmutilEvent struct {
 	contractAddr common.Address
-	userAddr     common.Address // receiver (mint) or initiator (burn)
+	userAddr     common.Address
 	isMint       bool
+}
+
+// extractCosmosAffectedAddresses scans BeginBlock, EndBlock and Cosmos tx
+// events for transfer/coin_received events. Returns addresses that had
+// balance changes through Cosmos-native paths (staking rewards, IBC,
+// kavadist, etc.) which are invisible to the EVM tracer.
+func extractCosmosAffectedAddresses(blockRes *abci.ResponseDeliverTx, beginEvents, endEvents []abci.Event) map[common.Address]struct{} {
+	addrs := make(map[common.Address]struct{})
+
+	collectFromEvents := func(events []abci.Event) {
+		for _, event := range events {
+			switch event.Type {
+			case "transfer":
+				attrs := eventAttrs(event)
+				if addr, ok := parseCosmosAddress(attrs["recipient"]); ok {
+					addrs[addr] = struct{}{}
+				}
+				if addr, ok := parseCosmosAddress(attrs["sender"]); ok {
+					addrs[addr] = struct{}{}
+				}
+			case "coin_received":
+				attrs := eventAttrs(event)
+				if addr, ok := parseCosmosAddress(attrs["receiver"]); ok {
+					addrs[addr] = struct{}{}
+				}
+			case "coin_spent":
+				attrs := eventAttrs(event)
+				if addr, ok := parseCosmosAddress(attrs["spender"]); ok {
+					addrs[addr] = struct{}{}
+				}
+			}
+		}
+	}
+
+	collectFromEvents(beginEvents)
+	collectFromEvents(endEvents)
+
+	return addrs
+}
+
+// extractCosmosAffectedAddressesFromBlock is a convenience wrapper that
+// extracts addresses from all block-level events (begin/end block + tx events).
+func extractCosmosAffectedAddressesFromBlock(
+	beginEvents, endEvents []abci.Event,
+	txResults []*abci.ResponseDeliverTx,
+) map[common.Address]struct{} {
+	addrs := make(map[common.Address]struct{})
+
+	merge := func(src map[common.Address]struct{}) {
+		for k, v := range src {
+			addrs[k] = v
+		}
+	}
+
+	merge(extractCosmosAffectedAddresses(nil, beginEvents, endEvents))
+
+	// Also scan Cosmos tx events (non-EVM txs like IBC transfers)
+	for _, txResult := range txResults {
+		merge(extractCosmosAffectedAddresses(nil, txResult.Events, nil))
+	}
+
+	return addrs
 }
 
 // reconstructEvmutilDiff builds a TransactionStateDiff from block result events
 // for evmutil-related Cosmos txs. This is the fallback when no stored diff is
 // available (i.e., historical blocks processed before StateDiffCollector).
-//
-// It works by:
-//  1. Scanning block events for evmutil conversion events
-//  2. Extracting affected ERC20 contract + user addresses
-//  3. Querying archive state at blockHeight for the exact storage values
-//  4. Building a minimal StorageDiff with the affected ERC20 balance slots
 func reconstructEvmutilDiff(
 	b *backend.Backend,
 	blockRes []*abci.ResponseDeliverTx,
@@ -53,7 +109,6 @@ func reconstructEvmutilDiff(
 		return nil, nil
 	}
 
-	// Collect unique contracts and users for state queries.
 	type contractUser struct {
 		contract common.Address
 		user     common.Address
@@ -67,9 +122,8 @@ func reconstructEvmutilDiff(
 		seen[contractUser{evt.contractAddr, evt.userAddr}] = struct{}{}
 	}
 
-	// Build storage diff: query ERC20 balance slots at blockHeight.
 	heightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &blockHeight}
-	storageDiffMap := make(map[common.Hash]map[common.Hash]*uint256.Int) // addrHash -> slotHash -> value
+	storageDiffMap := make(map[common.Hash]map[common.Hash]*uint256.Int)
 
 	for cu := range seen {
 		addrHash := crypto.Keccak256Hash(cu.contract.Bytes())
@@ -90,7 +144,6 @@ func reconstructEvmutilDiff(
 		}
 		storageDiffMap[addrHash][slotHash] = v
 
-		// Also query totalSupply (slot 2 for OpenZeppelin ERC20).
 		tsSlot := common.BigToHash(big.NewInt(2))
 		tsSlotHash := crypto.Keccak256Hash(tsSlot.Bytes())
 		tsValue, err := b.GetStorageAt(cu.contract, tsSlot.Hex(), heightOrHash)
@@ -124,7 +177,6 @@ func reconstructEvmutilDiff(
 	return &diff, affectedAddrs
 }
 
-// extractEvmutilEvents scans block tx results for evmutil conversion events.
 func extractEvmutilEvents(txResults []*abci.ResponseDeliverTx) []evmutilEvent {
 	var events []evmutilEvent
 	for _, txResult := range txResults {
@@ -155,8 +207,6 @@ func parseEvmutilEvent(event abci.Event) (evmutilEvent, bool) {
 		return evmutilEvent{}, false
 	}
 
-	// For mint: the affected user is the receiver.
-	// For burn: the affected user is the initiator.
 	var userHex string
 	if isMint {
 		userHex = attrs[attrReceiver]
@@ -164,8 +214,7 @@ func parseEvmutilEvent(event abci.Event) (evmutilEvent, bool) {
 		userHex = attrs[attrInitiator]
 	}
 
-	// User address can be hex (0x...) or bech32 (kava1...).
-	userAddr, ok := parseAddress(userHex)
+	userAddr, ok := parseCosmosAddress(userHex)
 	if !ok {
 		return evmutilEvent{}, false
 	}
@@ -185,8 +234,9 @@ func eventAttrs(event abci.Event) map[string]string {
 	return m
 }
 
-// parseAddress parses a hex (0x...) or bech32 (kava1...) address.
-func parseAddress(s string) (common.Address, bool) {
+// parseCosmosAddress parses a hex (0x...) or bech32 (kava1...) address
+// into an EVM common.Address.
+func parseCosmosAddress(s string) (common.Address, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return common.Address{}, false
@@ -194,18 +244,10 @@ func parseAddress(s string) (common.Address, bool) {
 	if common.IsHexAddress(s) {
 		return common.HexToAddress(s), true
 	}
-	// Try bech32: extract raw bytes.
-	// bech32 addresses are 20 bytes, same as EVM addresses.
-	if len(s) > 4 && strings.Contains(s, "1") {
-		// Use SDK AccAddressFromBech32 equivalent: just decode the hex part.
-		// Since we can't import cosmos-sdk here without cycle risk,
-		// we use a simple hex fallback from the last 40 chars if available.
-		// Actually, for kava addresses, the 20-byte address maps directly.
-		// We'll convert via the common.BytesToAddress approach.
-		decoded, err := hexutil.Decode("0x" + s) // won't work for bech32
-		if err == nil && len(decoded) == 20 {
-			return common.BytesToAddress(decoded), true
-		}
+	// Try bech32 decoding (kava1..., cosmos1..., etc.)
+	accAddr, err := sdk.AccAddressFromBech32(s)
+	if err == nil && len(accAddr) == 20 {
+		return common.BytesToAddress(accAddr), true
 	}
 	return common.Address{}, false
 }
@@ -214,9 +256,7 @@ func parseAddress(s string) (common.Address, bool) {
 // For OpenZeppelin ERC20, `_balances` is at slot 0.
 // slot = keccak256(abi.encode(address, uint256(0)))
 func erc20BalanceSlot(addr common.Address) common.Hash {
-	// abi.encode(address, uint256(0)) = addr padded to 32 bytes + uint256(0)
 	key := make([]byte, 64)
-	copy(key[12:32], addr.Bytes()) // address left-padded to 32 bytes
-	// key[32:64] is already zero (slot index 0)
+	copy(key[12:32], addr.Bytes())
 	return crypto.Keccak256Hash(key)
 }
