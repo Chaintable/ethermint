@@ -20,3 +20,9 @@ type Hooks struct {
 	OnCodeSet       OnCodeSet
 	OnLog           LogHook
 }
+
+// HooksProvider is implemented by tracers that want to receive StateDB
+// change notifications without being a full CallTracer.
+type HooksProvider interface {
+	GetHooks() *Hooks
+}
