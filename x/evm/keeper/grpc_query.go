@@ -621,16 +621,6 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		results = append(results, &result)
 	}
 
-	// For debank tracer, append a sentinel TxTraceResult carrying the non-EVM
-	// state diff (recorded during normal block execution by evmutil's
-	// StateDiffCollector). This captures state changes from Cosmos tx paths
-	// like MsgConvertCosmosCoinToERC20 that are invisible to EVM-only tracing.
-	if req.TraceConfig != nil && req.TraceConfig.Tracer == dtracer.Name {
-		if sentinel := k.buildNonEVMStateDiffFromStore(ctx, req.BlockNumber); sentinel != nil {
-			results = append(results, sentinel)
-		}
-	}
-
 	resultData, err := json.Marshal(results)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
