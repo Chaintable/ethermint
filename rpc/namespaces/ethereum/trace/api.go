@@ -170,8 +170,21 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		blockFile.StorageContracts = append(blockFile.StorageContracts, traceResult.StorageContracts...)
 		transactionStates = append(transactionStates, traceResult.StateDiff)
 	}
-	// Append the IAVL diff LAST so BuildBlockStateDiff's per-address overwrite
-	// semantics make it the source of truth (IAVL diff reflects the actual final state).
+	// If no stored non-EVM diff (historical blocks processed before
+	// StateDiffCollector), reconstruct from evmutil block events + archive state.
+	if nonEVMStateDiff == nil {
+		evtDiff, evtAddrs := reconstructEvmutilDiff(api.backend, blockRes.TxsResults, blockHeight)
+		if evtDiff != nil {
+			nonEVMStateDiff = evtDiff
+		}
+		// Include evmutil-affected addresses in fromToAddress so
+		// addGasUsedStateDiff queries their final account state.
+		for addr := range evtAddrs {
+			fromToAddress[addr] = struct{}{}
+		}
+	}
+	// Append non-EVM diff LAST so BuildBlockStateDiff's per-address overwrite
+	// semantics make it the source of truth (reflects actual final state).
 	if nonEVMStateDiff != nil {
 		transactionStates = append(transactionStates, *nonEVMStateDiff)
 	}
