@@ -331,14 +331,17 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context,
 	}
 
 	stateDB := statedb.New(ctx, k, txConfig)
-	if dt, ok := tracer.(*dtracer.CallTracer); ok {
+	switch t := tracer.(type) {
+	case *dtracer.CallTracer:
 		stateDB.SetHooks(&statedb.Hooks{
-			OnAccountSet:    dt.OnAccountSet,
-			OnAccountDelete: dt.OnAccountDelete,
-			OnStateSet:      dt.OnStateSet,
-			OnCodeSet:       dt.OnCodeSet,
-			OnLog:           dt.OnLog,
+			OnAccountSet:    t.OnAccountSet,
+			OnAccountDelete: t.OnAccountDelete,
+			OnStateSet:      t.OnStateSet,
+			OnCodeSet:       t.OnCodeSet,
+			OnLog:           t.OnLog,
 		})
+	case statedb.HooksProvider:
+		stateDB.SetHooks(t.GetHooks())
 	}
 	evm := k.NewEVM(ctx, msg, cfg, tracer, stateDB)
 
