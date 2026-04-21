@@ -18,6 +18,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -138,9 +139,38 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	for addr := range cosmosAddrs {
 		fromToAddress[addr] = struct{}{}
 	}
-	// nonEVMStateDiff is the block-level IAVL state diff appended by the gRPC TraceBlock
-	// as a sentinel result; used to capture state changes from non-EVM paths
-	// (BeginBlocker/EndBlocker via evmutil etc).
+	// Build tx hash -> receipt map for cross-validation of trace results.
+	// Tracer may incorrectly report OOG transactions as successful, so we
+	// use receipts as the source of truth for status and gasUsed.
+	type receiptInfo struct {
+		status  bool
+		gasUsed uint64
+	}
+	receiptMap := make(map[string]receiptInfo)
+	for i := range transactions {
+		transaction := transactions[i].(*rpctypes.RPCTransaction)
+		txHash := transaction.Hash.Hex()
+		receipt, err := api.backend.GetTransactionReceipt(transaction.Hash)
+		if err == nil && receipt != nil {
+			var rStatus bool
+			var rGasUsed uint64
+			if st, ok := receipt["status"].(string); ok {
+				rStatus = st == "0x1"
+			}
+			switch gu := receipt["gasUsed"].(type) {
+			case string:
+				rGasUsed, _ = hexutil.DecodeUint64(gu)
+			case hexutil.Uint64:
+				rGasUsed = uint64(gu)
+			}
+			receiptMap[strings.ToLower(txHash)] = receiptInfo{
+				status:  rStatus,
+				gasUsed: rGasUsed,
+			}
+		}
+	}
+
+	// nonEVMStateDiff is the block-level state diff for non-EVM paths.
 	var nonEVMStateDiff *dtypes.TransactionStateDiff
 	for _, result := range traceResults {
 		if result.Error != "" {
@@ -170,6 +200,27 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		if err = json.Unmarshal(decoded, &traceResult); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
+
+		// Cross-validate with receipt: fix OOG tx status/gasUsed and
+		// discard state changes from failed txs (Bug B & C fix).
+		txID := strings.ToLower(traceResult.Transaction.ID)
+		if ri, ok := receiptMap[txID]; ok && !ri.status {
+			// Receipt says tx failed — override tracer's incorrect success status.
+			traceResult.Transaction.Status = false
+			traceResult.Transaction.GasUsed = new(big.Int).SetUint64(ri.gasUsed)
+			// Move events/traces to error buckets; discard StorageDiff.
+			traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
+			traceResult.Events = nil
+			traceResult.ErrorTraces = append(traceResult.ErrorTraces, traceResult.Traces...)
+			traceResult.Traces = nil
+			traceResult.StateDiff = dtypes.TransactionStateDiff{
+				NewAccounts:     make([]dtypes.NewAccount, 0),
+				DeletedAccounts: make([]common.Hash, 0),
+				StorageDiff:     make([]dtypes.AccountStorageDiff, 0),
+				NewCodes:        make([]dtypes.NewCode, 0),
+			}
+		}
+
 		blockFile.Txs = append(blockFile.Txs, traceResult.Transaction)
 		blockFile.Traces = append(blockFile.Traces, traceResult.Traces...)
 		blockFile.Events = append(blockFile.Events, traceResult.Events...)
