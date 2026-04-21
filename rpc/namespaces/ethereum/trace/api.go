@@ -18,7 +18,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -139,36 +138,31 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	for addr := range cosmosAddrs {
 		fromToAddress[addr] = struct{}{}
 	}
-	// Build tx hash -> receipt map for cross-validation of trace results.
-	// Tracer may incorrectly report OOG transactions as successful, so we
-	// use receipts as the source of truth for status and gasUsed.
-	type receiptInfo struct {
-		status  bool
-		gasUsed uint64
-	}
-	receiptMap := make(map[string]receiptInfo)
-	for i := range transactions {
-		transaction := transactions[i].(*rpctypes.RPCTransaction)
-		txHash := transaction.Hash.Hex()
-		receipt, err := api.backend.GetTransactionReceipt(transaction.Hash)
-		if err == nil && receipt != nil {
-			var rStatus bool
-			var rGasUsed uint64
-			switch st := receipt["status"].(type) {
-			case hexutil.Uint:
-				rStatus = uint64(st) == 1
-			case string:
-				rStatus = st == "0x1"
+	// Build tx hash -> failed status map from block results (Cosmos layer).
+	// Uses blockRes we already have — zero extra RPC calls.
+	// When a Cosmos tx containing MsgEthereumTx has Code != 0,
+	// the EVM execution was reverted and its state changes should be discarded.
+	txFailedMap := make(map[string]bool) // lowercase tx hash -> true if failed
+	if blockRes != nil && resBlock != nil {
+		txDecoder := api.clientCtx.TxConfig.TxDecoder()
+		for i, rawTx := range resBlock.Block.Txs {
+			if i >= len(blockRes.TxsResults) {
+				break
 			}
-			switch gu := receipt["gasUsed"].(type) {
-			case hexutil.Uint64:
-				rGasUsed = uint64(gu)
-			case string:
-				rGasUsed, _ = hexutil.DecodeUint64(gu)
+			txResult := blockRes.TxsResults[i]
+			if txResult.Code == 0 {
+				continue // success, skip
 			}
-			receiptMap[strings.ToLower(txHash)] = receiptInfo{
-				status:  rStatus,
-				gasUsed: rGasUsed,
+			// Decode to find MsgEthereumTx hash
+			decodedTx, err := txDecoder(rawTx)
+			if err != nil {
+				continue
+			}
+			for _, msg := range decodedTx.GetMsgs() {
+				if ethMsg, ok := msg.(*evmtypes.MsgEthereumTx); ok {
+					txHash := ethMsg.AsTransaction().Hash().Hex()
+					txFailedMap[strings.ToLower(txHash)] = true
+				}
 			}
 		}
 	}
@@ -204,13 +198,12 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 			return nil, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
 
-		// Cross-validate with receipt: fix OOG tx status/gasUsed and
+		// Cross-validate with block results: fix OOG tx status and
 		// discard state changes from failed txs (Bug B & C fix).
+		// Uses txFailedMap built from blockRes — zero extra RPC calls.
 		txID := strings.ToLower(traceResult.Transaction.ID)
-		if ri, ok := receiptMap[txID]; ok && !ri.status {
-			// Receipt says tx failed — override tracer's incorrect success status.
+		if txFailedMap[txID] {
 			traceResult.Transaction.Status = false
-			traceResult.Transaction.GasUsed = new(big.Int).SetUint64(ri.gasUsed)
 			// Move events/traces to error buckets; discard StorageDiff.
 			traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
 			traceResult.Events = nil
