@@ -202,22 +202,42 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		// Cross-validate: fix failed tx status/gasUsed and discard
 		// their state changes (Bug B & C fix).
 		txID := strings.ToLower(traceResult.Transaction.ID)
+
+		// Detect suspect OOG txs: tracer reports gasUsed == gasLimit/2
+		// (minGasMultiplier=0.5 signature). These txs appear successful
+		// in tracer and Cosmos layer but failed in receipt.
+		isSuspectOOG := false
+		if traceResult.Transaction.Gas != nil && traceResult.Transaction.GasUsed != nil &&
+			traceResult.Transaction.Gas.Sign() > 0 {
+			gasLimit := traceResult.Transaction.Gas
+			gasUsed := traceResult.Transaction.GasUsed
+			half := new(big.Int).Div(gasLimit, big.NewInt(2))
+			isSuspectOOG = gasUsed.Cmp(half) == 0
+		}
+
 		isFailed := txFailedMap[txID] || !traceResult.Transaction.Status
-		if isFailed {
-			traceResult.Transaction.Status = false
-			// For EVM-level failed txs (OOG etc.), tracer reports wrong
-			// gasUsed (e.g. gasLimit/2 due to minGasMultiplier). Query
-			// receipt to get the correct value. Only triggers for failed
-			// txs (~0.1% of all txs), so overhead is negligible.
-			if !txFailedMap[txID] {
-				receipt, err := api.backend.GetTransactionReceipt(common.HexToHash(traceResult.Transaction.ID))
-				if err == nil && receipt != nil {
+		// For suspect OOG, verify against receipt
+		if isSuspectOOG && !isFailed {
+			receipt, err := api.backend.GetTransactionReceipt(common.HexToHash(traceResult.Transaction.ID))
+			if err == nil && receipt != nil {
+				var rStatus bool
+				switch st := receipt["status"].(type) {
+				case hexutil.Uint:
+					rStatus = uint64(st) == 1
+				}
+				if !rStatus {
+					isFailed = true
+					// Override gasUsed from receipt
 					switch gu := receipt["gasUsed"].(type) {
 					case hexutil.Uint64:
 						traceResult.Transaction.GasUsed = new(big.Int).SetUint64(uint64(gu))
 					}
 				}
 			}
+		}
+
+		if isFailed {
+			traceResult.Transaction.Status = false
 			// Move events/traces to error buckets; discard StorageDiff.
 			traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
 			traceResult.Events = nil
