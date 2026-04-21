@@ -154,14 +154,17 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		if err == nil && receipt != nil {
 			var rStatus bool
 			var rGasUsed uint64
-			if st, ok := receipt["status"].(string); ok {
+			switch st := receipt["status"].(type) {
+			case hexutil.Uint:
+				rStatus = uint64(st) == 1
+			case string:
 				rStatus = st == "0x1"
 			}
 			switch gu := receipt["gasUsed"].(type) {
-			case string:
-				rGasUsed, _ = hexutil.DecodeUint64(gu)
 			case hexutil.Uint64:
 				rGasUsed = uint64(gu)
+			case string:
+				rGasUsed, _ = hexutil.DecodeUint64(gu)
 			}
 			receiptMap[strings.ToLower(txHash)] = receiptInfo{
 				status:  rStatus,
