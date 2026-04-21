@@ -18,6 +18,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -198,12 +199,25 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 			return nil, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
 
-		// Cross-validate with block results: fix OOG tx status and
-		// discard state changes from failed txs (Bug B & C fix).
-		// Uses txFailedMap built from blockRes — zero extra RPC calls.
+		// Cross-validate: fix failed tx status/gasUsed and discard
+		// their state changes (Bug B & C fix).
 		txID := strings.ToLower(traceResult.Transaction.ID)
-		if txFailedMap[txID] {
+		isFailed := txFailedMap[txID] || !traceResult.Transaction.Status
+		if isFailed {
 			traceResult.Transaction.Status = false
+			// For EVM-level failed txs (OOG etc.), tracer reports wrong
+			// gasUsed (e.g. gasLimit/2 due to minGasMultiplier). Query
+			// receipt to get the correct value. Only triggers for failed
+			// txs (~0.1% of all txs), so overhead is negligible.
+			if !txFailedMap[txID] {
+				receipt, err := api.backend.GetTransactionReceipt(common.HexToHash(traceResult.Transaction.ID))
+				if err == nil && receipt != nil {
+					switch gu := receipt["gasUsed"].(type) {
+					case hexutil.Uint64:
+						traceResult.Transaction.GasUsed = new(big.Int).SetUint64(uint64(gu))
+					}
+				}
+			}
 			// Move events/traces to error buckets; discard StorageDiff.
 			traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
 			traceResult.Events = nil
