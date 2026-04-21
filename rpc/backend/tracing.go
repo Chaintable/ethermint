@@ -188,10 +188,23 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 		return []*evmtypes.TxTraceResult{}, nil
 	}
 
+	// Fetch block results to filter out Cosmos-level failed txs
+	blockRes, err := b.TendermintBlockResultByNumber(&block.Block.Height)
+	if err != nil {
+		return nil, err
+	}
+	txResults := blockRes.TxsResults
+
 	txDecoder := b.clientCtx.TxConfig.TxDecoder()
 
 	var txsMessages []*evmtypes.MsgEthereumTx
 	for i, tx := range txs {
+		// Skip txs that failed at Cosmos level (e.g. block gas limit exceeded),
+		// consistent with EthMsgsFromTendermintBlock filtering.
+		if i < len(txResults) && !rpctypes.TxSuccessOrExceedsBlockGasLimit(txResults[i]) {
+			continue
+		}
+
 		decodedTx, err := txDecoder(tx)
 		if err != nil {
 			b.logger.Error("failed to decode transaction", "hash", txs[i].Hash(), "error", err.Error())
