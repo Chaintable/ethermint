@@ -126,7 +126,25 @@ func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtype
 			delete(deleteAccountMap, newAccount.Address)
 		}
 		for _, accountStorageDiff := range diff.StorageDiff {
-			accountStorageDiffMap[accountStorageDiff.Address] = accountStorageDiff
+			if existing, ok := accountStorageDiffMap[accountStorageDiff.Address]; ok {
+				// Merge: later tx's slot values overwrite earlier ones for the same slot,
+				// but slots from earlier txs that aren't in the later tx are preserved.
+				slotMap := make(map[common.Hash]dtypes.IndexValuePair)
+				for _, v := range existing.Values {
+					slotMap[v.Index] = v
+				}
+				for _, v := range accountStorageDiff.Values {
+					slotMap[v.Index] = v
+				}
+				merged := make([]dtypes.IndexValuePair, 0, len(slotMap))
+				for _, v := range slotMap {
+					merged = append(merged, v)
+				}
+				existing.Values = merged
+				accountStorageDiffMap[accountStorageDiff.Address] = existing
+			} else {
+				accountStorageDiffMap[accountStorageDiff.Address] = accountStorageDiff
+			}
 		}
 	}
 	for deleteAccount := range deleteAccountMap {
