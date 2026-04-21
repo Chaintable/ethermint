@@ -553,7 +553,7 @@ func (k Keeper) TraceTx(c context.Context, req *types.QueryTraceTxRequest) (*typ
 		_ = json.Unmarshal([]byte(req.TraceConfig.TracerJsonConfig), &tracerConfig)
 	}
 
-	result, _, err := k.traceTx(ctx, cfg, txConfig, signer, tx, req.TraceConfig, false, tracerConfig)
+	result, _, _, err := k.traceTx(ctx, cfg, txConfig, signer, tx, req.TraceConfig, false, tracerConfig)
 	if err != nil {
 		// error will be returned with detail status from traceTx
 		return nil, err
@@ -605,19 +605,34 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	txsLength := len(req.Txs)
 	results := make([]*types.TxTraceResult, 0, txsLength)
 
+	// Initialize block gas meter to correctly handle block gas limit reverts.
+	// Without this, txs that should fail due to cumulative block gas exceeding
+	// the limit would succeed during trace replay.
+	blockGasLimit := ethermint.BlockGasLimit(ctx)
+	var blockGasConsumed uint64
+
 	txConfig := statedb.NewEmptyTxConfig(common.BytesToHash(ctx.HeaderHash().Bytes()))
 	for i, tx := range req.Txs {
 		result := types.TxTraceResult{}
 		ethTx := tx.AsTransaction()
 		txConfig.TxHash = ethTx.Hash()
 		txConfig.TxIndex = uint(i)
-		traceResult, logIndex, err := k.traceTx(ctx, cfg, txConfig, signer, ethTx, req.TraceConfig, true, nil)
+
+		// Check if this tx would exceed block gas limit
+		if blockGasLimit > 0 && blockGasConsumed >= blockGasLimit {
+			result.Error = "out of gas in location: block gas meter"
+			results = append(results, &result)
+			continue
+		}
+
+		traceResult, logIndex, gasUsed, err := k.traceTx(ctx, cfg, txConfig, signer, ethTx, req.TraceConfig, true, nil)
 		if err != nil {
 			result.Error = err.Error()
 		} else {
 			txConfig.LogIndex = logIndex
 			result.Result = traceResult
 		}
+		blockGasConsumed += gasUsed
 		results = append(results, &result)
 	}
 
@@ -631,7 +646,7 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	}, nil
 }
 
-// traceTx do trace on one transaction, it returns a tuple: (traceResult, nextLogIndex, error).
+// traceTx do trace on one transaction, it returns a tuple: (traceResult, nextLogIndex, gasUsed, error).
 func (k *Keeper) traceTx(
 	ctx sdk.Context,
 	cfg *statedb.EVMConfig,
@@ -641,7 +656,7 @@ func (k *Keeper) traceTx(
 	traceConfig *types.TraceConfig,
 	commitMessage bool,
 	tracerJSONConfig json.RawMessage,
-) (*interface{}, uint, error) {
+) (*interface{}, uint, uint64, error) {
 	// Assemble the structured logger or the JavaScript tracer
 	var (
 		tracer    tracers.Tracer
@@ -651,7 +666,7 @@ func (k *Keeper) traceTx(
 	)
 	msg, err := tx.AsMessage(signer, cfg.BaseFee)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, 0, status.Error(codes.Internal, err.Error())
 	}
 
 	if traceConfig == nil {
@@ -684,14 +699,14 @@ func (k *Keeper) traceTx(
 		tracer = dtracer.NewCallTracer(tCtx)
 	} else if traceConfig.Tracer != "" {
 		if tracer, err = tracers.New(traceConfig.Tracer, tCtx, tracerJSONConfig); err != nil {
-			return nil, 0, status.Error(codes.Internal, err.Error())
+			return nil, 0, 0, status.Error(codes.Internal, err.Error())
 		}
 	}
 
 	// Define a meaningful timeout of a single transaction trace
 	if traceConfig.Timeout != "" {
 		if timeout, err = time.ParseDuration(traceConfig.Timeout); err != nil {
-			return nil, 0, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
+			return nil, 0, 0, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
 		}
 	}
 
@@ -708,16 +723,16 @@ func (k *Keeper) traceTx(
 
 	res, err := k.ApplyMessageWithConfig(ctx, msg, tracer, commitMessage, cfg, txConfig)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, 0, status.Error(codes.Internal, err.Error())
 	}
 
 	var result interface{}
 	result, err = tracer.GetResult()
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, 0, status.Error(codes.Internal, err.Error())
 	}
 
-	return &result, txConfig.LogIndex + uint(len(res.Logs)), nil
+	return &result, txConfig.LogIndex + uint(len(res.Logs)), res.GasUsed, nil
 }
 
 // BaseFee implements the Query/BaseFee gRPC method
