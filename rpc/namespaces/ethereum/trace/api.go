@@ -139,34 +139,8 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	for addr := range cosmosAddrs {
 		fromToAddress[addr] = struct{}{}
 	}
-	// Build tx hash -> failed status map from block results (Cosmos layer).
-	// Uses blockRes we already have — zero extra RPC calls.
-	// When a Cosmos tx containing MsgEthereumTx has Code != 0,
-	// the EVM execution was reverted and its state changes should be discarded.
-	txFailedMap := make(map[string]bool) // lowercase tx hash -> true if failed
-	if blockRes != nil && resBlock != nil {
-		txDecoder := api.clientCtx.TxConfig.TxDecoder()
-		for i, rawTx := range resBlock.Block.Txs {
-			if i >= len(blockRes.TxsResults) {
-				break
-			}
-			txResult := blockRes.TxsResults[i]
-			if txResult.Code == 0 {
-				continue // success, skip
-			}
-			// Decode to find MsgEthereumTx hash
-			decodedTx, err := txDecoder(rawTx)
-			if err != nil {
-				continue
-			}
-			for _, msg := range decodedTx.GetMsgs() {
-				if ethMsg, ok := msg.(*evmtypes.MsgEthereumTx); ok {
-					txHash := ethMsg.AsTransaction().Hash().Hex()
-					txFailedMap[strings.ToLower(txHash)] = true
-				}
-			}
-		}
-	}
+	// Note: Cosmos-level failed txs (Code != 0) are already filtered out
+	// by TraceBlock's phantom tx filter. No txFailedMap needed here.
 
 	// nonEVMStateDiff is the block-level state diff for non-EVM paths.
 	var nonEVMStateDiff *dtypes.TransactionStateDiff
@@ -199,55 +173,40 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 			return nil, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
 
-		// Cross-validate: fix failed tx status/gasUsed and discard
-		// their state changes (Bug B & C fix).
-		txID := strings.ToLower(traceResult.Transaction.ID)
-
-		// Detect suspect OOG txs: tracer reports gasUsed == gasLimit/2
-		// (minGasMultiplier=0.5 signature). These txs appear successful
-		// in tracer and Cosmos layer but failed in receipt.
-		isSuspectOOG := false
+		// Detect OOG txs that tracer misreports as successful.
+		// Signature: gasUsed == gasLimit/2 (minGasMultiplier=0.5 artifact).
+		// Verify against receipt; only fires for ~0.3% of txs.
 		if traceResult.Transaction.Gas != nil && traceResult.Transaction.GasUsed != nil &&
 			traceResult.Transaction.Gas.Sign() > 0 {
-			gasLimit := traceResult.Transaction.Gas
-			gasUsed := traceResult.Transaction.GasUsed
-			half := new(big.Int).Div(gasLimit, big.NewInt(2))
-			isSuspectOOG = gasUsed.Cmp(half) == 0
-		}
-
-		isFailed := txFailedMap[txID] || !traceResult.Transaction.Status
-		// For suspect OOG, verify against receipt
-		if isSuspectOOG && !isFailed {
-			receipt, err := api.backend.GetTransactionReceipt(common.HexToHash(traceResult.Transaction.ID))
-			if err == nil && receipt != nil {
-				var rStatus bool
-				switch st := receipt["status"].(type) {
-				case hexutil.Uint:
-					rStatus = uint64(st) == 1
-				}
-				if !rStatus {
-					isFailed = true
-					// Override gasUsed from receipt
-					switch gu := receipt["gasUsed"].(type) {
-					case hexutil.Uint64:
-						traceResult.Transaction.GasUsed = new(big.Int).SetUint64(uint64(gu))
+			half := new(big.Int).Div(traceResult.Transaction.Gas, big.NewInt(2))
+			if traceResult.Transaction.GasUsed.Cmp(half) == 0 {
+				txHash := common.HexToHash(traceResult.Transaction.ID)
+				receipt, err := api.backend.GetTransactionReceipt(txHash)
+				if err == nil && receipt != nil {
+					var rStatus bool
+					switch st := receipt["status"].(type) {
+					case hexutil.Uint:
+						rStatus = uint64(st) == 1
+					}
+					if !rStatus {
+						// Confirmed OOG: fix status, gasUsed, discard state changes.
+						traceResult.Transaction.Status = false
+						switch gu := receipt["gasUsed"].(type) {
+						case hexutil.Uint64:
+							traceResult.Transaction.GasUsed = new(big.Int).SetUint64(uint64(gu))
+						}
+						traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
+						traceResult.Events = nil
+						traceResult.ErrorTraces = append(traceResult.ErrorTraces, traceResult.Traces...)
+						traceResult.Traces = nil
+						traceResult.StateDiff = dtypes.TransactionStateDiff{
+							NewAccounts:     make([]dtypes.NewAccount, 0),
+							DeletedAccounts: make([]common.Hash, 0),
+							StorageDiff:     make([]dtypes.AccountStorageDiff, 0),
+							NewCodes:        make([]dtypes.NewCode, 0),
+						}
 					}
 				}
-			}
-		}
-
-		if isFailed {
-			traceResult.Transaction.Status = false
-			// Move events/traces to error buckets; discard StorageDiff.
-			traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
-			traceResult.Events = nil
-			traceResult.ErrorTraces = append(traceResult.ErrorTraces, traceResult.Traces...)
-			traceResult.Traces = nil
-			traceResult.StateDiff = dtypes.TransactionStateDiff{
-				NewAccounts:     make([]dtypes.NewAccount, 0),
-				DeletedAccounts: make([]common.Hash, 0),
-				StorageDiff:     make([]dtypes.AccountStorageDiff, 0),
-				NewCodes:        make([]dtypes.NewCode, 0),
 			}
 		}
 
