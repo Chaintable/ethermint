@@ -18,6 +18,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -170,6 +171,35 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		if err = json.Unmarshal(decoded, &traceResult); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
+		// Detect OOG txs: tracer reports gasUsed == gasLimit/2 (minGasMultiplier
+		// artifact) and status=true, but receipt shows status=0 and gasUsed=gasLimit.
+		// Only queries receipt for suspect txs (~0.3% of blocks).
+		if traceResult.Transaction.Gas != nil && traceResult.Transaction.GasUsed != nil &&
+			traceResult.Transaction.Gas.Sign() > 0 {
+			half := new(big.Int).Div(traceResult.Transaction.Gas, big.NewInt(2))
+			if traceResult.Transaction.GasUsed.Cmp(half) == 0 {
+				receipt, err := api.backend.GetTransactionReceipt(common.HexToHash(traceResult.Transaction.ID))
+				if err == nil && receipt != nil {
+					if st, ok := receipt["status"].(hexutil.Uint); ok && uint64(st) != 1 {
+						traceResult.Transaction.Status = false
+						if gu, ok := receipt["gasUsed"].(hexutil.Uint64); ok {
+							traceResult.Transaction.GasUsed = new(big.Int).SetUint64(uint64(gu))
+						}
+						traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
+						traceResult.Events = nil
+						traceResult.ErrorTraces = append(traceResult.ErrorTraces, traceResult.Traces...)
+						traceResult.Traces = nil
+						traceResult.StateDiff = dtypes.TransactionStateDiff{
+							NewAccounts:     make([]dtypes.NewAccount, 0),
+							DeletedAccounts: make([]common.Hash, 0),
+							StorageDiff:     make([]dtypes.AccountStorageDiff, 0),
+							NewCodes:        make([]dtypes.NewCode, 0),
+						}
+					}
+				}
+			}
+		}
+
 		blockFile.Txs = append(blockFile.Txs, traceResult.Transaction)
 		blockFile.Traces = append(blockFile.Traces, traceResult.Traces...)
 		blockFile.Events = append(blockFile.Events, traceResult.Events...)
