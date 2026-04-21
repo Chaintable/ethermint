@@ -18,7 +18,6 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -139,10 +138,9 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	for addr := range cosmosAddrs {
 		fromToAddress[addr] = struct{}{}
 	}
-	// Note: Cosmos-level failed txs (Code != 0) are already filtered out
-	// by TraceBlock's phantom tx filter. No txFailedMap needed here.
-
-	// nonEVMStateDiff is the block-level state diff for non-EVM paths.
+	// nonEVMStateDiff is the block-level IAVL state diff appended by the gRPC TraceBlock
+	// as a sentinel result; used to capture state changes from non-EVM paths
+	// (BeginBlocker/EndBlocker via evmutil etc).
 	var nonEVMStateDiff *dtypes.TransactionStateDiff
 	for _, result := range traceResults {
 		if result.Error != "" {
@@ -172,44 +170,6 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		if err = json.Unmarshal(decoded, &traceResult); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
-
-		// Detect OOG txs that tracer misreports as successful.
-		// Signature: gasUsed == gasLimit/2 (minGasMultiplier=0.5 artifact).
-		// Verify against receipt; only fires for ~0.3% of txs.
-		if traceResult.Transaction.Gas != nil && traceResult.Transaction.GasUsed != nil &&
-			traceResult.Transaction.Gas.Sign() > 0 {
-			half := new(big.Int).Div(traceResult.Transaction.Gas, big.NewInt(2))
-			if traceResult.Transaction.GasUsed.Cmp(half) == 0 {
-				txHash := common.HexToHash(traceResult.Transaction.ID)
-				receipt, err := api.backend.GetTransactionReceipt(txHash)
-				if err == nil && receipt != nil {
-					var rStatus bool
-					switch st := receipt["status"].(type) {
-					case hexutil.Uint:
-						rStatus = uint64(st) == 1
-					}
-					if !rStatus {
-						// Confirmed OOG: fix status, gasUsed, discard state changes.
-						traceResult.Transaction.Status = false
-						switch gu := receipt["gasUsed"].(type) {
-						case hexutil.Uint64:
-							traceResult.Transaction.GasUsed = new(big.Int).SetUint64(uint64(gu))
-						}
-						traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
-						traceResult.Events = nil
-						traceResult.ErrorTraces = append(traceResult.ErrorTraces, traceResult.Traces...)
-						traceResult.Traces = nil
-						traceResult.StateDiff = dtypes.TransactionStateDiff{
-							NewAccounts:     make([]dtypes.NewAccount, 0),
-							DeletedAccounts: make([]common.Hash, 0),
-							StorageDiff:     make([]dtypes.AccountStorageDiff, 0),
-							NewCodes:        make([]dtypes.NewCode, 0),
-						}
-					}
-				}
-			}
-		}
-
 		blockFile.Txs = append(blockFile.Txs, traceResult.Transaction)
 		blockFile.Traces = append(blockFile.Traces, traceResult.Traces...)
 		blockFile.Events = append(blockFile.Events, traceResult.Events...)
