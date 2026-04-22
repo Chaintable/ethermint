@@ -735,6 +735,34 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		evmTxPtr++
 	}
 
+	// For newly deployed contracts (code was empty at height N-1 but now exists
+	// after evmutil replay), enumerate ALL storage slots via ForEachStorage.
+	// Constructor-written slots (name/symbol/owner/etc.) are only visible after
+	// the deploy call has been committed to CacheKVStore.
+	if collector != nil {
+		for _, op := range evmutilOps {
+			if op.Type != types.EvmutilOpMint {
+				continue
+			}
+			// Check if this contract was newly deployed in this block
+			// by checking if it has code after replay but had none before.
+			// Note: ctx store is CacheKVStore at N-1 + committed replay state.
+			acct := k.GetAccount(ctx, op.To)
+			if acct == nil {
+				continue
+			}
+			codeHash := common.BytesToHash(acct.CodeHash)
+			if codeHash == common.BytesToHash(types.EmptyCodeHash) {
+				continue
+			}
+			// Enumerate all storage slots for this contract and add to collector.
+			k.ForEachStorage(ctx, op.To, func(key, value common.Hash) bool {
+				collector.AddStorageChange(op.To, key, value.Bytes())
+				return true // continue iteration
+			})
+		}
+	}
+
 	// Append evmutil state diff sentinel if any changes were captured.
 	if collector != nil && !collector.IsEmpty() {
 		diff := collector.ToStateDiff()
