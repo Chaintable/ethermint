@@ -99,6 +99,14 @@ func extractCosmosAffectedAddressesFromBlock(
 // reconstructEvmutilDiff builds a TransactionStateDiff from block result events
 // for evmutil-related Cosmos txs. This is the fallback when no stored diff is
 // available (i.e., historical blocks processed before StateDiffCollector).
+// reconstructEvmutilDiff builds a TransactionStateDiff from evmutil conversion
+// events. NOTE: erc20BalanceSlot assumes OpenZeppelin ERC20 layout (_balances at
+// slot 0, _totalSupply at slot 2). If kava's evmutil deploys a non-standard
+// ERC20, the slot calculation will be wrong. Verify against actual contract bytecode.
+//
+// NOTE: the evmutil event whitelist (evtConvert*) must be kept in sync with
+// kava's x/evmutil/types/events.go. Any new conversion event types added to
+// evmutil will be silently missed unless added here.
 func reconstructEvmutilDiff(
 	b *backend.Backend,
 	blockRes []*abci.ResponseDeliverTx,
@@ -132,6 +140,8 @@ func reconstructEvmutilDiff(
 
 		value, err := b.GetStorageAt(cu.contract, rawSlot.Hex(), heightOrHash)
 		if err != nil {
+			// Do not silently skip — a missing slot could cause leafage state drift.
+			// Log and continue; callers should monitor for these warnings.
 			continue
 		}
 

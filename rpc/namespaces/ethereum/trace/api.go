@@ -139,8 +139,13 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		fromToAddress[addr] = struct{}{}
 	}
 	// Build EVM tx hash -> failed status from block results events.
-	// ethereum_tx events contain "ethereumTxFailed" for failed txs and
-	// "txGasUsed" for the real gas consumed. Zero extra RPC calls.
+	// Merges ALL ethereum_tx events per tx hash (ethermint emits two:
+	// one in ante handler, one in msg handler). Uses both ethereumTxFailed
+	// attribute AND txResult.Code as failure signals.
+	//
+	// IMPORTANT: This depends on ethermint v0.21's event format. If upstream
+	// changes event structure (merges events, renames keys, etc.), this will
+	// silently miss failed txs and leak reverted SSTORE into state_diff.
 	type evmTxInfo struct {
 		failed  bool
 		gasUsed uint64
@@ -148,6 +153,9 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	evmTxFailedMap := make(map[string]evmTxInfo) // lowercase EVM tx hash -> info
 	if blockRes != nil {
 		for _, txResult := range blockRes.TxsResults {
+			// Collect all ethereum_tx attributes for each tx hash in this Cosmos tx.
+			// A single Cosmos tx may have multiple ethereum_tx events for the same EVM tx.
+			perTx := make(map[string]*evmTxInfo) // txHash -> merged info
 			for _, event := range txResult.Events {
 				if event.Type != "ethereum_tx" {
 					continue
@@ -166,17 +174,25 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 				if txHash == "" {
 					continue
 				}
-				// Only record if we have gas info (second ethereum_tx event per tx)
-				if gasUsedStr != "" || failReason != "" {
-					var gu uint64
-					if gasUsedStr != "" {
-						fmt.Sscanf(gasUsedStr, "%d", &gu)
-					}
-					evmTxFailedMap[strings.ToLower(txHash)] = evmTxInfo{
-						failed:  failReason != "" || txResult.Code != 0,
-						gasUsed: gu,
-					}
+				key := strings.ToLower(txHash)
+				if perTx[key] == nil {
+					perTx[key] = &evmTxInfo{}
 				}
+				if failReason != "" {
+					perTx[key].failed = true
+				}
+				if gasUsedStr != "" {
+					fmt.Sscanf(gasUsedStr, "%d", &perTx[key].gasUsed)
+				}
+			}
+			// Apply Cosmos-level failure (Code != 0) as primary signal.
+			// This catches block gas limit OOG (Code=11) where ethereumTxFailed
+			// may not be present.
+			for key, info := range perTx {
+				if txResult.Code != 0 {
+					info.failed = true
+				}
+				evmTxFailedMap[key] = *info
 			}
 		}
 	}
@@ -342,10 +358,14 @@ func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, ne
 		if err != nil {
 			return nil, nil, err
 		}
+		var nonceVal uint64
+		if nonce != nil {
+			nonceVal = uint64(*nonce)
+		}
 		newAccountMap[addrHash] = dtypes.NewAccount{
 			Address:  addrHash,
 			Balance:  new(uint256.Int).SetBytes((*big.Int)(balance).Bytes()),
-			Nonce:    uint64(*nonce),
+			Nonce:    nonceVal,
 			CodeHash: crypto.Keccak256Hash(code),
 		}
 		storageChangeMap[addr] = struct{}{}
