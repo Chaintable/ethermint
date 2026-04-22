@@ -297,13 +297,6 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	stateDiff.NewCodes = append(stateDiff.NewCodes, extraNewCodes...)
 	blockFile.StorageContracts = storageContracts
 
-	// For newly deployed contracts (code appeared in this block), enumerate ALL
-	// storage slots at height N via ABCI subspace query and add any missing ones
-	// to StorageDiff. This catches constructor-written metadata slots (name,
-	// symbol, owner) that are invisible to the EVM tracer because the deployment
-	// went through CallEVMWithData(NoOpTracer).
-	api.enrichNewContractStorage(&stateDiff, fromToAddress, blockHeight)
-
 	out := &dtypes.DebankOutPut{
 		BlockFile:      blockFile,
 		Header:         stateHeader,
@@ -426,75 +419,3 @@ func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, ne
 // enumerates ALL their storage slots via ABCI subspace query at height N.
 // Missing slots are added to stateDiff.StorageDiff. This catches constructor-
 // written metadata (name/symbol/owner) from non-EVM deployment paths (evmutil).
-func (api *API) enrichNewContractStorage(
-	stateDiff *dtypes.BlockStorageDiff,
-	fromToAddress map[common.Address]struct{},
-	blockHeight rpctypes.BlockNumber,
-) {
-	emptyCodeHash := crypto.Keccak256Hash(nil)
-	prevHeight := blockHeight - 1
-	prevHeightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &prevHeight}
-
-	for addr := range fromToAddress {
-		// Check if this address has code at height N (already known from NewAccounts)
-		heightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &blockHeight}
-		codeN, err := api.backend.GetCode(addr, heightOrHash)
-		if err != nil || len(codeN) == 0 || crypto.Keccak256Hash(codeN) == emptyCodeHash {
-			continue
-		}
-
-		// Check if this address had NO code at height N-1 → newly deployed
-		codePrev, err := api.backend.GetCode(addr, prevHeightOrHash)
-		if err != nil || (len(codePrev) > 0 && crypto.Keccak256Hash(codePrev) != emptyCodeHash) {
-			continue // had code before, not a new deployment
-		}
-
-		// Enumerate all storage at height N via ABCI subspace query
-		allStorage, err := api.backend.GetAllContractStorage(addr, int64(blockHeight))
-		if err != nil {
-			api.logger.Error("failed to enumerate new contract storage", "addr", addr.Hex(), "err", err)
-			continue
-		}
-		if len(allStorage) == 0 {
-			continue
-		}
-
-		// Build the set of existing slots in stateDiff for this address
-		addrHash := crypto.Keccak256Hash(addr.Bytes())
-		existingSlots := make(map[common.Hash]struct{})
-		for i, entry := range stateDiff.StorageDiff {
-			if entry.Address == addrHash {
-				for _, pair := range entry.Values {
-					existingSlots[pair.Index] = struct{}{}
-				}
-				// Add missing slots to this existing entry
-				for slotKey, slotValue := range allStorage {
-					slotHash := crypto.Keccak256Hash(slotKey.Bytes())
-					if _, exists := existingSlots[slotHash]; !exists {
-						v := uint256.NewInt(0).SetBytes(slotValue.Bytes())
-						stateDiff.StorageDiff[i].Values = append(stateDiff.StorageDiff[i].Values, dtypes.IndexValuePair{
-							Index: slotHash,
-							Value: v,
-						})
-					}
-				}
-				allStorage = nil // done
-				break
-			}
-		}
-
-		// If no existing entry for this address, create a new one
-		if allStorage != nil {
-			pairs := make([]dtypes.IndexValuePair, 0, len(allStorage))
-			for slotKey, slotValue := range allStorage {
-				slotHash := crypto.Keccak256Hash(slotKey.Bytes())
-				v := uint256.NewInt(0).SetBytes(slotValue.Bytes())
-				pairs = append(pairs, dtypes.IndexValuePair{Index: slotHash, Value: v})
-			}
-			stateDiff.StorageDiff = append(stateDiff.StorageDiff, dtypes.AccountStorageDiff{
-				Address: addrHash,
-				Values:  pairs,
-			})
-		}
-	}
-}
