@@ -267,6 +267,9 @@ message QueryTraceTxResponse {
 message QueryTraceBlockRequest {
   // txs is an array of messages in the block
   repeated MsgEthereumTx txs = 1;
+  // evmutil_ops contains JSON-encoded evmutil EVM operations to replay
+  // after EVM txs for capturing non-EVM state diffs (kava evmutil module).
+  repeated bytes evmutil_ops = 2;
   // trace_config holds extra parameters to trace functions.
   TraceConfig trace_config = 3;
   // block_number of the traced block

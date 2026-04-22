@@ -19,7 +19,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
+	"strings"
 
+	abci "github.com/cometbft/cometbft/abci/types"
 	tmrpctypes "github.com/cometbft/cometbft/rpc/core/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -229,8 +232,22 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 	}
 	ctxWithHeight := rpctypes.ContextWithHeight(int64(contextHeight))
 
+	// Extract evmutil EVM operations from block events for non-EVM state diff capture.
+	var evmutilOpsBytes [][]byte
+	if evmutilOps := extractEvmutilOps(txResults); len(evmutilOps) > 0 {
+		for _, op := range evmutilOps {
+			opBytes, err := json.Marshal(op)
+			if err != nil {
+				b.logger.Error("failed to marshal evmutil op", "error", err)
+				continue
+			}
+			evmutilOpsBytes = append(evmutilOpsBytes, opBytes)
+		}
+	}
+
 	traceBlockRequest := &evmtypes.QueryTraceBlockRequest{
 		Txs:             txsMessages,
+		EvmutilOps:      evmutilOpsBytes,
 		TraceConfig:     config,
 		BlockNumber:     block.Block.Height,
 		BlockTime:       block.Block.Time,
@@ -250,4 +267,176 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 	}
 
 	return decodedResults, nil
+}
+
+// evmutil event types emitted by kava's x/evmutil module.
+const (
+	evtConvertCosmosCoinToERC20   = "convert_cosmos_coin_to_erc20"
+	evtConvertCosmosCoinFromERC20 = "convert_cosmos_coin_from_erc20"
+	evtConvertCoinToERC20         = "convert_evm_erc20_from_coin"
+	evtConvertERC20ToCoin         = "convert_evm_erc20_to_coin"
+)
+
+// bep3 denoms require amount * 10^10 to convert from 8 to 18 decimals.
+var bep3Denoms = map[string]bool{
+	"bnb": true, "busd": true, "btcb": true, "xrpb": true,
+}
+
+var bep3ConversionFactor = new(big.Int).Exp(big.NewInt(10), big.NewInt(10), nil) // 10^10
+
+// ERC20 function selectors
+var (
+	selectorMint     = common.Hex2Bytes("40c10f19") // mint(address,uint256)
+	selectorBurn     = common.Hex2Bytes("9dc29fac") // burn(address,uint256)
+	selectorTransfer = common.Hex2Bytes("a9059cbb") // transfer(address,uint256)
+)
+
+// extractEvmutilOps scans block tx results for evmutil conversion events
+// and reconstructs the EVM call parameters needed for replay.
+func extractEvmutilOps(txResults []*abci.ResponseDeliverTx) []evmtypes.EvmutilOp {
+	var ops []evmtypes.EvmutilOp
+	for _, txResult := range txResults {
+		for _, event := range txResult.Events {
+			op, ok := parseEvmutilEventToOp(event)
+			if ok {
+				ops = append(ops, op)
+			}
+		}
+	}
+	return ops
+}
+
+func parseEvmutilEventToOp(event abci.Event) (evmtypes.EvmutilOp, bool) {
+	attrs := make(map[string]string)
+	for _, attr := range event.Attributes {
+		attrs[attr.Key] = attr.Value
+	}
+
+	erc20Hex := attrs["erc20_address"]
+	if erc20Hex == "" || !common.IsHexAddress(erc20Hex) {
+		return evmtypes.EvmutilOp{}, false
+	}
+	contractAddr := common.HexToAddress(erc20Hex)
+
+	// Parse amount from sdk.Coin.String() format, e.g. "1000000uhard"
+	amountStr := attrs["amount"]
+	amount, denom := parseCoinString(amountStr)
+	if amount == nil {
+		return evmtypes.EvmutilOp{}, false
+	}
+
+	moduleAddr := evmtypes.EvmutilModuleEVMAddress
+
+	switch event.Type {
+	case evtConvertCosmosCoinToERC20:
+		// Cosmos-native → ERC20: mint(receiver, amount) from ModuleAddr
+		receiver := parseHexOrBech32(attrs["receiver"])
+		if receiver == (common.Address{}) {
+			return evmtypes.EvmutilOp{}, false
+		}
+		return evmtypes.EvmutilOp{
+			Type: evmtypes.EvmutilOpMint,
+			From: moduleAddr,
+			To:   contractAddr,
+			Data: packABI(selectorMint, receiver, amount),
+		}, true
+
+	case evtConvertCosmosCoinFromERC20:
+		// ERC20 → Cosmos-native: burn(initiator, amount) from ModuleAddr
+		initiator := parseHexOrBech32(attrs["initiator"])
+		if initiator == (common.Address{}) {
+			return evmtypes.EvmutilOp{}, false
+		}
+		return evmtypes.EvmutilOp{
+			Type: evmtypes.EvmutilOpBurn,
+			From: moduleAddr,
+			To:   contractAddr,
+			Data: packABI(selectorBurn, initiator, amount),
+		}, true
+
+	case evtConvertCoinToERC20:
+		// EVM-native unlock: transfer(receiver, amount) from ModuleAddr
+		receiver := parseHexOrBech32(attrs["receiver"])
+		if receiver == (common.Address{}) {
+			return evmtypes.EvmutilOp{}, false
+		}
+		evmAmount := convertBep3Amount(amount, denom)
+		return evmtypes.EvmutilOp{
+			Type: evmtypes.EvmutilOpUnlock,
+			From: moduleAddr,
+			To:   contractAddr,
+			Data: packABI(selectorTransfer, receiver, evmAmount),
+		}, true
+
+	case evtConvertERC20ToCoin:
+		// EVM-native lock: transfer(ModuleAddr, amount) from initiator
+		initiator := parseHexOrBech32(attrs["initiator"])
+		if initiator == (common.Address{}) {
+			return evmtypes.EvmutilOp{}, false
+		}
+		evmAmount := convertBep3Amount(amount, denom)
+		return evmtypes.EvmutilOp{
+			Type: evmtypes.EvmutilOpLock,
+			From: initiator,
+			To:   contractAddr,
+			Data: packABI(selectorTransfer, moduleAddr, evmAmount),
+		}, true
+	}
+
+	return evmtypes.EvmutilOp{}, false
+}
+
+// parseCoinString parses "1000000uhard" into (big.Int(1000000), "uhard").
+func parseCoinString(s string) (*big.Int, string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, ""
+	}
+	// Find where digits end and denom starts
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9') {
+		i++
+	}
+	if i == 0 || i == len(s) {
+		return nil, ""
+	}
+	amount, ok := new(big.Int).SetString(s[:i], 10)
+	if !ok {
+		return nil, ""
+	}
+	return amount, s[i:]
+}
+
+// convertBep3Amount multiplies amount by 10^10 if denom is a bep3 asset.
+func convertBep3Amount(amount *big.Int, denom string) *big.Int {
+	if bep3Denoms[denom] {
+		return new(big.Int).Mul(amount, bep3ConversionFactor)
+	}
+	return amount
+}
+
+// packABI encodes a function call: selector + abi.encode(address, uint256)
+func packABI(selector []byte, addr common.Address, amount *big.Int) []byte {
+	data := make([]byte, 4+64) // 4 bytes selector + 32 bytes address + 32 bytes uint256
+	copy(data[0:4], selector)
+	copy(data[4+12:4+32], addr.Bytes())                        // address padded to 32 bytes
+	amountBytes := amount.Bytes()
+	copy(data[4+32+(32-len(amountBytes)):4+64], amountBytes)    // uint256 big-endian padded
+	return data
+}
+
+// parseHexOrBech32 parses a hex (0x...) or bech32 (kava1...) address.
+func parseHexOrBech32(s string) common.Address {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return common.Address{}
+	}
+	if common.IsHexAddress(s) {
+		return common.HexToAddress(s)
+	}
+	accAddr, err := sdk.AccAddressFromBech32(s)
+	if err == nil && len(accAddr) == 20 {
+		return common.BytesToAddress(accAddr)
+	}
+	return common.Address{}
 }
