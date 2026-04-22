@@ -466,10 +466,12 @@ func (api *API) enrichNewContractStorage(
 					existingSlots[pair.Index] = struct{}{}
 				}
 				for slotKey, slotValue := range allStorage {
-					if _, exists := existingSlots[slotKey]; !exists {
+					// Hash the raw key to match pipeline convention: Index = keccak(rawKey)
+					slotIndex := crypto.Keccak256Hash(slotKey.Bytes())
+					if _, exists := existingSlots[slotIndex]; !exists {
 						v := uint256.NewInt(0).SetBytes(slotValue.Bytes())
 						stateDiff.StorageDiff[i].Values = append(stateDiff.StorageDiff[i].Values, dtypes.IndexValuePair{
-							Index: slotKey,
+							Index: slotIndex,
 							Value: v,
 						})
 					}
@@ -481,8 +483,9 @@ func (api *API) enrichNewContractStorage(
 		if !found {
 			pairs := make([]dtypes.IndexValuePair, 0, len(allStorage))
 			for slotKey, slotValue := range allStorage {
+				slotIndex := crypto.Keccak256Hash(slotKey.Bytes())
 				v := uint256.NewInt(0).SetBytes(slotValue.Bytes())
-				pairs = append(pairs, dtypes.IndexValuePair{Index: slotKey, Value: v})
+				pairs = append(pairs, dtypes.IndexValuePair{Index: slotIndex, Value: v})
 			}
 			stateDiff.StorageDiff = append(stateDiff.StorageDiff, dtypes.AccountStorageDiff{
 				Address: addrHash,
