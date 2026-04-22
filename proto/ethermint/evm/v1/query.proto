@@ -272,6 +272,9 @@ message QueryTraceBlockRequest {
   repeated bytes evmutil_ops = 2;
   // trace_config holds extra parameters to trace functions.
   TraceConfig trace_config = 3;
+  // evm_tx_block_indices maps each entry in txs to its original position
+  // in the block's tx list, enabling correct interleaving with evmutil_ops.
+  repeated int32 evm_tx_block_indices = 4;
   // block_number of the traced block
   int64 block_number = 5;
   // block_hash (hex) of the traced block
