@@ -123,6 +123,12 @@ func (c *StateDiffCollector) ToStateDiff() dtypes.TransactionStateDiff {
 	return diff
 }
 
+// AddStorageChange adds a storage slot change to the collector.
+// Used by ForEachStorage enumeration for newly deployed contracts.
+func (c *StateDiffCollector) AddStorageChange(addr common.Address, key common.Hash, value []byte) {
+	c.onStateSet(addr, key, value)
+}
+
 // IsEmpty reports whether no state changes were collected.
 func (c *StateDiffCollector) IsEmpty() bool {
 	return len(c.newAccounts) == 0 &&
