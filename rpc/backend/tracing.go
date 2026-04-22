@@ -201,6 +201,7 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 	txDecoder := b.clientCtx.TxConfig.TxDecoder()
 
 	var txsMessages []*evmtypes.MsgEthereumTx
+	var evmTxBlockIndices []int32
 	for i, tx := range txs {
 		// Skip txs that failed at Cosmos level (e.g. block gas limit exceeded),
 		// consistent with EthMsgsFromTendermintBlock filtering.
@@ -221,6 +222,7 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 				continue
 			}
 			txsMessages = append(txsMessages, ethMessage)
+			evmTxBlockIndices = append(evmTxBlockIndices, int32(i))
 		}
 	}
 
@@ -246,9 +248,10 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 	}
 
 	traceBlockRequest := &evmtypes.QueryTraceBlockRequest{
-		Txs:             txsMessages,
-		EvmutilOps:      evmutilOpsBytes,
-		TraceConfig:     config,
+		Txs:                txsMessages,
+		EvmutilOps:         evmutilOpsBytes,
+		TraceConfig:        config,
+		EvmTxBlockIndices:  evmTxBlockIndices,
 		BlockNumber:     block.Block.Height,
 		BlockTime:       block.Block.Time,
 		BlockHash:       common.Bytes2Hex(block.BlockID.Hash),
@@ -295,10 +298,11 @@ var (
 // and reconstructs the EVM call parameters needed for replay.
 func extractEvmutilOps(txResults []*abci.ResponseDeliverTx) []evmtypes.EvmutilOp {
 	var ops []evmtypes.EvmutilOp
-	for _, txResult := range txResults {
+	for i, txResult := range txResults {
 		for _, event := range txResult.Events {
 			op, ok := parseEvmutilEventToOp(event)
 			if ok {
+				op.BlockTxIndex = i
 				ops = append(ops, op)
 			}
 		}

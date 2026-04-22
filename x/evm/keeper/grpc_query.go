@@ -42,7 +42,6 @@ import (
 	ethparams "github.com/ethereum/go-ethereum/params"
 
 	dtracer "github.com/evmos/ethermint/debank/tracer"
-	dtypes "github.com/evmos/ethermint/debank/types"
 	ethermint "github.com/evmos/ethermint/types"
 	"github.com/evmos/ethermint/x/evm/statedb"
 	"github.com/evmos/ethermint/x/evm/types"
@@ -612,17 +611,108 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	blockGasLimit := ethermint.BlockGasLimit(ctx)
 	var blockGasConsumed uint64
 
+	// Parse evmutil ops with their block positions for interleaved replay.
+	var evmutilOps []types.EvmutilOp
+	isDebankTracer := req.TraceConfig != nil && req.TraceConfig.Tracer == dtracer.Name
+	if isDebankTracer && len(req.EvmutilOps) > 0 {
+		for _, opBytes := range req.EvmutilOps {
+			var op types.EvmutilOp
+			if err := json.Unmarshal(opBytes, &op); err == nil {
+				evmutilOps = append(evmutilOps, op)
+			}
+		}
+	}
+
+	// StateDiffCollector accumulates state changes from all evmutil ops.
+	var collector *statedb.StateDiffCollector
+	if len(evmutilOps) > 0 {
+		collector = statedb.NewStateDiffCollector()
+	}
+
+	// Replay EVM txs and evmutil ops interleaved in original block tx order.
+	// evmutil ops must execute at their correct position so subsequent EVM txs
+	// see the correct intermediate state.
 	txConfig := statedb.NewEmptyTxConfig(common.BytesToHash(ctx.HeaderHash().Bytes()))
-	for i, tx := range req.Txs {
+	evmTxPtr := 0  // pointer into req.Txs
+	evmutilPtr := 0 // pointer into evmutilOps
+
+	// Determine max block tx index to iterate
+	maxBlockIdx := 0
+	for _, idx := range req.EvmTxBlockIndices {
+		if int(idx) > maxBlockIdx {
+			maxBlockIdx = int(idx)
+		}
+	}
+	for _, op := range evmutilOps {
+		if op.BlockTxIndex > maxBlockIdx {
+			maxBlockIdx = op.BlockTxIndex
+		}
+	}
+
+	for blockIdx := 0; blockIdx <= maxBlockIdx; blockIdx++ {
+		// Check if there's an evmutil op at this position
+		if evmutilPtr < len(evmutilOps) && evmutilOps[evmutilPtr].BlockTxIndex == blockIdx {
+			op := evmutilOps[evmutilPtr]
+			evmutilPtr++
+
+			// First deploy detection
+			if op.Type == types.EvmutilOpMint && len(op.DeployData) > 0 {
+				acct := k.GetAccount(ctx, op.To)
+				if acct == nil || common.BytesToHash(acct.CodeHash) == common.BytesToHash(types.EmptyCodeHash) {
+					deployMsg := types.BuildDeployMessage(op)
+					k.ApplyMessageWithConfig(ctx, deployMsg, collector, true, cfg, txConfig)
+				}
+			}
+			msg := types.BuildEVMMessage(op)
+			if _, err := k.ApplyMessageWithConfig(ctx, msg, collector, true, cfg, txConfig); err != nil {
+				k.Logger(ctx).Error("evmutil op replay failed", "type", op.Type, "blockTxIdx", blockIdx, "err", err)
+			}
+			continue
+		}
+
+		// Check if there's an EVM tx at this position
+		if evmTxPtr < len(req.Txs) && evmTxPtr < len(req.EvmTxBlockIndices) &&
+			int(req.EvmTxBlockIndices[evmTxPtr]) == blockIdx {
+			tx := req.Txs[evmTxPtr]
+			result := types.TxTraceResult{}
+			ethTx := tx.AsTransaction()
+			txConfig.TxHash = ethTx.Hash()
+			txConfig.TxIndex = uint(evmTxPtr)
+
+			if blockGasLimit > 0 && blockGasConsumed >= blockGasLimit {
+				result.Error = "out of gas in location: block gas meter"
+				results = append(results, &result)
+				evmTxPtr++
+				continue
+			}
+
+			traceResult, logIndex, gasUsed, err := k.traceTx(ctx, cfg, txConfig, signer, ethTx, req.TraceConfig, true, nil)
+			if err != nil {
+				result.Error = err.Error()
+			} else {
+				txConfig.LogIndex = logIndex
+				result.Result = traceResult
+			}
+			blockGasConsumed += gasUsed
+			results = append(results, &result)
+			evmTxPtr++
+			continue
+		}
+		// else: non-EVM, non-evmutil Cosmos tx at this position — skip
+	}
+
+	// Process any remaining EVM txs (if EvmTxBlockIndices was not provided, fall back to sequential)
+	for evmTxPtr < len(req.Txs) {
+		tx := req.Txs[evmTxPtr]
 		result := types.TxTraceResult{}
 		ethTx := tx.AsTransaction()
 		txConfig.TxHash = ethTx.Hash()
-		txConfig.TxIndex = uint(i)
+		txConfig.TxIndex = uint(evmTxPtr)
 
-		// Check if this tx would exceed block gas limit
 		if blockGasLimit > 0 && blockGasConsumed >= blockGasLimit {
 			result.Error = "out of gas in location: block gas meter"
 			results = append(results, &result)
+			evmTxPtr++
 			continue
 		}
 
@@ -635,20 +725,18 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		}
 		blockGasConsumed += gasUsed
 		results = append(results, &result)
+		evmTxPtr++
 	}
 
-	// Replay evmutil EVM operations (kava Cosmos→EVM conversions) to capture
-	// storage changes invisible to the normal EVM tracer.
-	if len(req.EvmutilOps) > 0 && req.TraceConfig != nil && req.TraceConfig.Tracer == dtracer.Name {
-		evmutilDiff := k.replayEvmutilOps(ctx, cfg, txConfig, req.EvmutilOps)
-		if evmutilDiff != nil {
-			sentinel := map[string]interface{}{"_non_evm_state_diff": evmutilDiff}
-			sentinelData, err := json.Marshal(sentinel)
-			if err == nil {
-				results = append(results, &types.TxTraceResult{
-					Result: json.RawMessage(sentinelData),
-				})
-			}
+	// Append evmutil state diff sentinel if any changes were captured.
+	if collector != nil && !collector.IsEmpty() {
+		diff := collector.ToStateDiff()
+		sentinel := map[string]interface{}{"_non_evm_state_diff": &diff}
+		sentinelData, err := json.Marshal(sentinel)
+		if err == nil {
+			results = append(results, &types.TxTraceResult{
+				Result: json.RawMessage(sentinelData),
+			})
 		}
 	}
 
@@ -776,48 +864,3 @@ func getChainID(ctx sdk.Context, chainID int64) (*big.Int, error) {
 	return big.NewInt(chainID), nil
 }
 
-// replayEvmutilOps replays evmutil EVM operations (mint/burn/transfer) using
-// StateDiffCollector to capture complete state changes. Called from TraceBlock
-// after all EVM txs have been replayed, so ctx contains their accumulated state.
-func (k *Keeper) replayEvmutilOps(
-	ctx sdk.Context,
-	cfg *statedb.EVMConfig,
-	txConfig statedb.TxConfig,
-	opsBytes [][]byte,
-) *dtypes.TransactionStateDiff {
-	collector := statedb.NewStateDiffCollector()
-
-	for i, opBytes := range opsBytes {
-		var op types.EvmutilOp
-		if err := json.Unmarshal(opBytes, &op); err != nil {
-			k.Logger(ctx).Error("failed to unmarshal evmutil op", "index", i, "err", err)
-			continue
-		}
-
-		// First deploy detection: if this is a mint op and the contract has no
-		// code at height N-1, it's the first conversion for this denom and the
-		// contract needs to be deployed first.
-		if op.Type == types.EvmutilOpMint && len(op.DeployData) > 0 {
-			acct := k.GetAccount(ctx, op.To)
-			if acct == nil || common.BytesToHash(acct.CodeHash) == common.BytesToHash(types.EmptyCodeHash) {
-				deployMsg := types.BuildDeployMessage(op)
-				if _, err := k.ApplyMessageWithConfig(ctx, deployMsg, collector, true, cfg, txConfig); err != nil {
-					k.Logger(ctx).Error("evmutil deploy replay failed", "contract", op.To.Hex(), "err", err)
-				}
-			}
-		}
-
-		// Replay the state-changing EVM call (mint/burn/transfer).
-		msg := types.BuildEVMMessage(op)
-		if _, err := k.ApplyMessageWithConfig(ctx, msg, collector, true, cfg, txConfig); err != nil {
-			k.Logger(ctx).Error("evmutil op replay failed", "type", op.Type, "contract", op.To.Hex(), "err", err)
-			continue
-		}
-	}
-
-	diff := collector.ToStateDiff()
-	if collector.IsEmpty() {
-		return nil
-	}
-	return &diff
-}

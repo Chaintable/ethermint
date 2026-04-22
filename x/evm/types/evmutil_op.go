@@ -30,12 +30,13 @@ const evmutilReplayGasLimit = 30_000_000
 // These are reconstructed from Cosmos events and replayed in TraceBlock to
 // capture EVM storage changes that are invisible to the normal EVM tracer.
 type EvmutilOp struct {
-	Type       EvmutilOpType  `json:"type"`
-	From       common.Address `json:"from"`
-	To         common.Address `json:"to"`                      // ERC20 contract address
-	Data       []byte         `json:"data"`                    // ABI-encoded calldata (mint/burn/transfer)
-	DeployData []byte         `json:"deploy_data,omitempty"`   // contract creation bytecode (only for mint, used if first deploy)
-	Nonce      uint64         `json:"nonce"`                   // sender nonce at execution time
+	Type          EvmutilOpType  `json:"type"`
+	From          common.Address `json:"from"`
+	To            common.Address `json:"to"`                      // ERC20 contract address
+	Data          []byte         `json:"data"`                    // ABI-encoded calldata (mint/burn/transfer)
+	DeployData    []byte         `json:"deploy_data,omitempty"`   // contract creation bytecode (only for mint, used if first deploy)
+	Nonce         uint64         `json:"nonce"`                   // sender nonce at execution time
+	BlockTxIndex  int            `json:"block_tx_index"`          // position in original block tx list
 }
 
 // BuildEVMMessage converts an EvmutilOp into a core.Message suitable for

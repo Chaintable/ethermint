@@ -1070,6 +1070,9 @@ type QueryTraceBlockRequest struct {
 	EvmutilOps [][]byte `protobuf:"bytes,2,rep,name=evmutil_ops,json=evmutilOps,proto3" json:"evmutil_ops,omitempty"`
 	// trace_config holds extra parameters to trace functions.
 	TraceConfig *TraceConfig `protobuf:"bytes,3,opt,name=trace_config,json=traceConfig,proto3" json:"trace_config,omitempty"`
+	// evm_tx_block_indices maps each entry in txs to its original position
+	// in the block's tx list, enabling correct interleaving with evmutil_ops.
+	EvmTxBlockIndices []int32 `protobuf:"varint,4,rep,packed,name=evm_tx_block_indices,json=evmTxBlockIndices,proto3" json:"evm_tx_block_indices,omitempty"`
 	// block_number of the traced block
 	BlockNumber int64 `protobuf:"varint,5,opt,name=block_number,json=blockNumber,proto3" json:"block_number,omitempty"`
 	// block_hash (hex) of the traced block
@@ -1125,6 +1128,13 @@ func (m *QueryTraceBlockRequest) GetTxs() []*MsgEthereumTx {
 func (m *QueryTraceBlockRequest) GetEvmutilOps() [][]byte {
 	if m != nil {
 		return m.EvmutilOps
+	}
+	return nil
+}
+
+func (m *QueryTraceBlockRequest) GetEvmTxBlockIndices() []int32 {
+	if m != nil {
+		return m.EvmTxBlockIndices
 	}
 	return nil
 }
@@ -2731,6 +2741,25 @@ func (m *QueryTraceBlockRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) 
 		i--
 		dAtA[i] = 0x1a
 	}
+	if len(m.EvmTxBlockIndices) > 0 {
+		dAtA2 := make([]byte, len(m.EvmTxBlockIndices)*10)
+		var j2 int
+		for _, num := range m.EvmTxBlockIndices {
+			x2 := uint64(num)
+			for x2 >= 1<<7 {
+				dAtA2[j2] = uint8(x2&0x7f | 0x80)
+				j2++
+				x2 >>= 7
+			}
+			dAtA2[j2] = uint8(x2)
+			j2++
+		}
+		i -= j2
+		copy(dAtA[i:], dAtA2[:j2])
+		i = encodeVarintQuery(dAtA, i, uint64(j2))
+		i--
+		dAtA[i] = 0x22
+	}
 	if len(m.EvmutilOps) > 0 {
 		for iNdEx := len(m.EvmutilOps) - 1; iNdEx >= 0; iNdEx-- {
 			i -= len(m.EvmutilOps[iNdEx])
@@ -3198,6 +3227,13 @@ func (m *QueryTraceBlockRequest) Size() (n int) {
 	}
 	if m.TraceConfig != nil {
 		l = m.TraceConfig.Size()
+		n += 1 + l + sovQuery(uint64(l))
+	}
+	if len(m.EvmTxBlockIndices) > 0 {
+		l = 0
+		for _, e := range m.EvmTxBlockIndices {
+			l += sovQuery(uint64(e))
+		}
 		n += 1 + l + sovQuery(uint64(l))
 	}
 	if m.BlockNumber != 0 {
@@ -5509,6 +5545,71 @@ func (m *QueryTraceBlockRequest) Unmarshal(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 4:
+			if wireType == 2 {
+				var packedLen int
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowQuery
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					packedLen |= int(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				if packedLen < 0 {
+					return ErrInvalidLengthQuery
+				}
+				postIndex := iNdEx + packedLen
+				if postIndex < 0 {
+					return ErrInvalidLengthQuery
+				}
+				if postIndex > l {
+					return io.ErrUnexpectedEOF
+				}
+				for iNdEx < postIndex {
+					var v int32
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return ErrIntOverflowQuery
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						v |= int32(b&0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					m.EvmTxBlockIndices = append(m.EvmTxBlockIndices, v)
+				}
+			} else if wireType == 0 {
+				var v int32
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowQuery
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					v |= int32(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				m.EvmTxBlockIndices = append(m.EvmTxBlockIndices, v)
+			} else {
+				return fmt.Errorf("proto: wrong wireType = %d for field EvmTxBlockIndices", wireType)
+			}
 		case 5:
 			if wireType != 0 {
 				return fmt.Errorf("proto: wrong wireType = %d for field BlockNumber", wireType)
