@@ -18,6 +18,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -138,61 +139,36 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	for addr := range cosmosAddrs {
 		fromToAddress[addr] = struct{}{}
 	}
-	// Build EVM tx hash -> failed status from block results events.
-	// Merges ALL ethereum_tx events per tx hash (ethermint emits two:
-	// one in ante handler, one in msg handler). Uses both ethereumTxFailed
-	// attribute AND txResult.Code as failure signals.
-	//
-	// IMPORTANT: This depends on ethermint v0.21's event format. If upstream
-	// changes event structure (merges events, renames keys, etc.), this will
-	// silently miss failed txs and leak reverted SSTORE into state_diff.
-	type evmTxInfo struct {
-		failed  bool
+	// Build tx hash -> receipt map for cross-validation of trace results.
+	// Tracer may incorrectly report OOG transactions as successful, so we
+	// use receipts as the source of truth for status and gasUsed.
+	type receiptInfo struct {
+		status  bool
 		gasUsed uint64
 	}
-	evmTxFailedMap := make(map[string]evmTxInfo) // lowercase EVM tx hash -> info
-	if blockRes != nil {
-		for _, txResult := range blockRes.TxsResults {
-			// Collect all ethereum_tx attributes for each tx hash in this Cosmos tx.
-			// A single Cosmos tx may have multiple ethereum_tx events for the same EVM tx.
-			perTx := make(map[string]*evmTxInfo) // txHash -> merged info
-			for _, event := range txResult.Events {
-				if event.Type != "ethereum_tx" {
-					continue
-				}
-				var txHash, failReason, gasUsedStr string
-				for _, attr := range event.Attributes {
-					switch attr.Key {
-					case "ethereumTxHash":
-						txHash = attr.Value
-					case "ethereumTxFailed":
-						failReason = attr.Value
-					case "txGasUsed":
-						gasUsedStr = attr.Value
-					}
-				}
-				if txHash == "" {
-					continue
-				}
-				key := strings.ToLower(txHash)
-				if perTx[key] == nil {
-					perTx[key] = &evmTxInfo{}
-				}
-				if failReason != "" {
-					perTx[key].failed = true
-				}
-				if gasUsedStr != "" {
-					fmt.Sscanf(gasUsedStr, "%d", &perTx[key].gasUsed)
-				}
+	receiptMap := make(map[string]receiptInfo)
+	for i := range transactions {
+		transaction := transactions[i].(*rpctypes.RPCTransaction)
+		txHash := transaction.Hash.Hex()
+		receipt, err := api.backend.GetTransactionReceipt(transaction.Hash)
+		if err == nil && receipt != nil {
+			var rStatus bool
+			var rGasUsed uint64
+			switch st := receipt["status"].(type) {
+			case hexutil.Uint:
+				rStatus = uint64(st) == 1
+			case string:
+				rStatus = st == "0x1"
 			}
-			// Apply Cosmos-level failure (Code != 0) as primary signal.
-			// This catches block gas limit OOG (Code=11) where ethereumTxFailed
-			// may not be present.
-			for key, info := range perTx {
-				if txResult.Code != 0 {
-					info.failed = true
-				}
-				evmTxFailedMap[key] = *info
+			switch gu := receipt["gasUsed"].(type) {
+			case hexutil.Uint64:
+				rGasUsed = uint64(gu)
+			case string:
+				rGasUsed, _ = hexutil.DecodeUint64(gu)
+			}
+			receiptMap[strings.ToLower(txHash)] = receiptInfo{
+				status:  rStatus,
+				gasUsed: rGasUsed,
 			}
 		}
 	}
@@ -227,15 +203,15 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		if err = json.Unmarshal(decoded, &traceResult); err != nil {
 			return nil, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
-		// Cross-validate with block results events: fix failed tx status,
-		// gasUsed and discard reverted state changes (Bug B & C).
-		// Uses evmTxFailedMap built from ethereum_tx events — zero extra RPC.
+
+		// Cross-validate with receipt: fix OOG tx status/gasUsed and
+		// discard state changes from failed txs (Bug B & C fix).
 		txID := strings.ToLower(traceResult.Transaction.ID)
-		if info, ok := evmTxFailedMap[txID]; ok && info.failed {
+		if ri, ok := receiptMap[txID]; ok && !ri.status {
+			// Receipt says tx failed — override tracer's incorrect success status.
 			traceResult.Transaction.Status = false
-			if info.gasUsed > 0 {
-				traceResult.Transaction.GasUsed = new(big.Int).SetUint64(info.gasUsed)
-			}
+			traceResult.Transaction.GasUsed = new(big.Int).SetUint64(ri.gasUsed)
+			// Move events/traces to error buckets; discard StorageDiff.
 			traceResult.ErrorEvents = append(traceResult.ErrorEvents, traceResult.Events...)
 			traceResult.Events = nil
 			traceResult.ErrorTraces = append(traceResult.ErrorTraces, traceResult.Traces...)
