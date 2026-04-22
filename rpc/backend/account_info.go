@@ -151,6 +151,21 @@ func (b *Backend) GetStorageAt(address common.Address, key string, blockNrOrHash
 	return value.Bytes(), nil
 }
 
+// GetAllContractStorage enumerates all storage key-value pairs for a contract
+// address at the given block height. Uses the keeper's ForEachStorage via gRPC.
+func (b *Backend) GetAllContractStorage(address common.Address, blockNum rpctypes.BlockNumber) (map[common.Hash]common.Hash, error) {
+	req := &evmtypes.QueryStorageAllRequest{Address: address.Hex()}
+	res, err := b.queryClient.StorageAll(rpctypes.ContextWithHeight(blockNum.Int64()), req)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[common.Hash]common.Hash, len(res.Entries))
+	for _, entry := range res.Entries {
+		result[common.HexToHash(entry.Key)] = common.HexToHash(entry.Value)
+	}
+	return result, nil
+}
+
 // GetBalance returns the provided account's balance up to the provided block number.
 func (b *Backend) GetBalance(address common.Address, blockNrOrHash rpctypes.BlockNumberOrHash) (*hexutil.Big, error) {
 	blockNum, err := b.BlockNumberFromTendermint(blockNrOrHash)

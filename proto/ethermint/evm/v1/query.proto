@@ -39,6 +39,11 @@ service Query {
     option (google.api.http).get = "/ethermint/evm/v1/storage/{address}/{key}";
   }
 
+  // StorageAll enumerates all storage key-value pairs for a contract address.
+  rpc StorageAll(QueryStorageAllRequest) returns (QueryStorageAllResponse) {
+    option (google.api.http).get = "/ethermint/evm/v1/storage_all/{address}";
+  }
+
   // Code queries the balance of all coins for a single account.
   rpc Code(QueryCodeRequest) returns (QueryCodeResponse) {
     option (google.api.http).get = "/ethermint/evm/v1/codes/{address}";
@@ -169,6 +174,24 @@ message QueryStorageRequest {
 message QueryStorageResponse {
   // value defines the storage state value hash associated with the given key.
   string value = 1;
+}
+
+// QueryStorageAllRequest is the request type for the Query/StorageAll RPC method.
+message QueryStorageAllRequest {
+  // address is the ethereum hex address to enumerate storage for.
+  string address = 1;
+}
+
+// QueryStorageAllResponse is the response type for the Query/StorageAll RPC method.
+message QueryStorageAllResponse {
+  // entries contains all storage key-value pairs for the contract.
+  repeated StorageEntry entries = 1 [(gogoproto.nullable) = false];
+}
+
+// StorageEntry represents a single storage key-value pair.
+message StorageEntry {
+  string key = 1;
+  string value = 2;
 }
 
 // QueryCodeRequest is the request type for the Query/Code RPC method.
