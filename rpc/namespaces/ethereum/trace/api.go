@@ -261,17 +261,21 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		blockFile.StorageContracts = append(blockFile.StorageContracts, traceResult.StorageContracts...)
 		transactionStates = append(transactionStates, traceResult.StateDiff)
 	}
+	// Always include evmutil-affected addresses in fromToAddress so
+	// addGasUsedStateDiff queries their final account state and code.
+	// This is needed even when sentinel is present, because the sentinel
+	// only covers StorageDiff — NewCodes for deployed contracts must come
+	// from addGasUsedStateDiff's eth_getCode queries.
+	evtAddrs := extractEvmutilAffectedAddresses(blockRes.TxsResults)
+	for addr := range evtAddrs {
+		fromToAddress[addr] = struct{}{}
+	}
 	// If no stored non-EVM diff (historical blocks processed before
 	// StateDiffCollector), reconstruct from evmutil block events + archive state.
 	if nonEVMStateDiff == nil {
-		evtDiff, evtAddrs := reconstructEvmutilDiff(api.backend, blockRes.TxsResults, blockHeight)
+		evtDiff, _ := reconstructEvmutilDiff(api.backend, blockRes.TxsResults, blockHeight)
 		if evtDiff != nil {
 			nonEVMStateDiff = evtDiff
-		}
-		// Include evmutil-affected addresses in fromToAddress so
-		// addGasUsedStateDiff queries their final account state.
-		for addr := range evtAddrs {
-			fromToAddress[addr] = struct{}{}
 		}
 	}
 	// Append non-EVM diff LAST so BuildBlockStateDiff's per-address overwrite
