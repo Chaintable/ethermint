@@ -1065,6 +1065,9 @@ func (m *QueryTraceTxResponse) GetData() []byte {
 type QueryTraceBlockRequest struct {
 	// txs is an array of messages in the block
 	Txs []*MsgEthereumTx `protobuf:"bytes,1,rep,name=txs,proto3" json:"txs,omitempty"`
+	// evmutil_ops contains JSON-encoded evmutil EVM operations to replay
+	// after EVM txs for capturing non-EVM state diffs (kava evmutil module).
+	EvmutilOps [][]byte `protobuf:"bytes,2,rep,name=evmutil_ops,json=evmutilOps,proto3" json:"evmutil_ops,omitempty"`
 	// trace_config holds extra parameters to trace functions.
 	TraceConfig *TraceConfig `protobuf:"bytes,3,opt,name=trace_config,json=traceConfig,proto3" json:"trace_config,omitempty"`
 	// block_number of the traced block
@@ -1115,6 +1118,13 @@ var xxx_messageInfo_QueryTraceBlockRequest proto.InternalMessageInfo
 func (m *QueryTraceBlockRequest) GetTxs() []*MsgEthereumTx {
 	if m != nil {
 		return m.Txs
+	}
+	return nil
+}
+
+func (m *QueryTraceBlockRequest) GetEvmutilOps() [][]byte {
+	if m != nil {
+		return m.EvmutilOps
 	}
 	return nil
 }
@@ -2721,6 +2731,15 @@ func (m *QueryTraceBlockRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) 
 		i--
 		dAtA[i] = 0x1a
 	}
+	if len(m.EvmutilOps) > 0 {
+		for iNdEx := len(m.EvmutilOps) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.EvmutilOps[iNdEx])
+			copy(dAtA[i:], m.EvmutilOps[iNdEx])
+			i = encodeVarintQuery(dAtA, i, uint64(len(m.EvmutilOps[iNdEx])))
+			i--
+			dAtA[i] = 0x12
+		}
+	}
 	if len(m.Txs) > 0 {
 		for iNdEx := len(m.Txs) - 1; iNdEx >= 0; iNdEx-- {
 			{
@@ -3168,6 +3187,12 @@ func (m *QueryTraceBlockRequest) Size() (n int) {
 	if len(m.Txs) > 0 {
 		for _, e := range m.Txs {
 			l = e.Size()
+			n += 1 + l + sovQuery(uint64(l))
+		}
+	}
+	if len(m.EvmutilOps) > 0 {
+		for _, b := range m.EvmutilOps {
+			l = len(b)
 			n += 1 + l + sovQuery(uint64(l))
 		}
 	}
@@ -5415,6 +5440,38 @@ func (m *QueryTraceBlockRequest) Unmarshal(dAtA []byte) error {
 			if err := m.Txs[len(m.Txs)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field EvmutilOps", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQuery
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return ErrInvalidLengthQuery
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return ErrInvalidLengthQuery
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.EvmutilOps = append(m.EvmutilOps, make([]byte, postIndex-iNdEx))
+			copy(m.EvmutilOps[len(m.EvmutilOps)-1], dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		case 3:
 			if wireType != 2 {

@@ -42,6 +42,7 @@ import (
 	ethparams "github.com/ethereum/go-ethereum/params"
 
 	dtracer "github.com/evmos/ethermint/debank/tracer"
+	dtypes "github.com/evmos/ethermint/debank/types"
 	ethermint "github.com/evmos/ethermint/types"
 	"github.com/evmos/ethermint/x/evm/statedb"
 	"github.com/evmos/ethermint/x/evm/types"
@@ -636,6 +637,21 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		results = append(results, &result)
 	}
 
+	// Replay evmutil EVM operations (kava Cosmos→EVM conversions) to capture
+	// storage changes invisible to the normal EVM tracer.
+	if len(req.EvmutilOps) > 0 && req.TraceConfig != nil && req.TraceConfig.Tracer == dtracer.Name {
+		evmutilDiff := k.replayEvmutilOps(ctx, cfg, txConfig, req.EvmutilOps)
+		if evmutilDiff != nil {
+			sentinel := map[string]interface{}{"_non_evm_state_diff": evmutilDiff}
+			sentinelData, err := json.Marshal(sentinel)
+			if err == nil {
+				results = append(results, &types.TxTraceResult{
+					Result: json.RawMessage(sentinelData),
+				})
+			}
+		}
+	}
+
 	resultData, err := json.Marshal(results)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -758,4 +774,50 @@ func getChainID(ctx sdk.Context, chainID int64) (*big.Int, error) {
 		return ethermint.ParseChainID(ctx.ChainID())
 	}
 	return big.NewInt(chainID), nil
+}
+
+// replayEvmutilOps replays evmutil EVM operations (mint/burn/transfer) using
+// StateDiffCollector to capture complete state changes. Called from TraceBlock
+// after all EVM txs have been replayed, so ctx contains their accumulated state.
+func (k *Keeper) replayEvmutilOps(
+	ctx sdk.Context,
+	cfg *statedb.EVMConfig,
+	txConfig statedb.TxConfig,
+	opsBytes [][]byte,
+) *dtypes.TransactionStateDiff {
+	collector := statedb.NewStateDiffCollector()
+
+	for i, opBytes := range opsBytes {
+		var op types.EvmutilOp
+		if err := json.Unmarshal(opBytes, &op); err != nil {
+			k.Logger(ctx).Error("failed to unmarshal evmutil op", "index", i, "err", err)
+			continue
+		}
+
+		// First deploy detection: if this is a mint op and the contract has no
+		// code at height N-1, it's the first conversion for this denom and the
+		// contract needs to be deployed first.
+		if op.Type == types.EvmutilOpMint && len(op.DeployData) > 0 {
+			acct := k.GetAccount(ctx, op.To)
+			if acct == nil || common.BytesToHash(acct.CodeHash) == common.BytesToHash(types.EmptyCodeHash) {
+				deployMsg := types.BuildDeployMessage(op)
+				if _, err := k.ApplyMessageWithConfig(ctx, deployMsg, collector, true, cfg, txConfig); err != nil {
+					k.Logger(ctx).Error("evmutil deploy replay failed", "contract", op.To.Hex(), "err", err)
+				}
+			}
+		}
+
+		// Replay the state-changing EVM call (mint/burn/transfer).
+		msg := types.BuildEVMMessage(op)
+		if _, err := k.ApplyMessageWithConfig(ctx, msg, collector, true, cfg, txConfig); err != nil {
+			k.Logger(ctx).Error("evmutil op replay failed", "type", op.Type, "contract", op.To.Hex(), "err", err)
+			continue
+		}
+	}
+
+	diff := collector.ToStateDiff()
+	if collector.IsEmpty() {
+		return nil
+	}
+	return &diff
 }
