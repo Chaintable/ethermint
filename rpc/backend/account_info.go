@@ -21,8 +21,6 @@ import (
 	"math/big"
 
 	sdkmath "cosmossdk.io/math"
-	abci "github.com/cometbft/cometbft/abci/types"
-	"github.com/cosmos/cosmos-sdk/types/kv"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -151,40 +149,6 @@ func (b *Backend) GetStorageAt(address common.Address, key string, blockNrOrHash
 
 	value := common.HexToHash(res.Value)
 	return value.Bytes(), nil
-}
-
-// GetAllContractStorage enumerates all storage key-value pairs for a contract
-// address at the given block height via ABCI subspace query. Returns a map of
-// storage key hash → value hash. Used to discover all constructor-written slots
-// for newly deployed contracts.
-func (b *Backend) GetAllContractStorage(address common.Address, blockHeight int64) (map[common.Hash]common.Hash, error) {
-	prefix := evmtypes.AddressStoragePrefix(address)
-
-	req := abci.RequestQuery{
-		Path:   fmt.Sprintf("/store/%s/subspace", evmtypes.StoreKey),
-		Data:   prefix,
-		Height: blockHeight,
-	}
-
-	resp, err := b.clientCtx.QueryABCI(req)
-	if err != nil {
-		return nil, err
-	}
-
-	var pairs kv.Pairs
-	if err := pairs.Unmarshal(resp.Value); err != nil {
-		return nil, err
-	}
-
-	result := make(map[common.Hash]common.Hash, len(pairs.Pairs))
-	for _, pair := range pairs.Pairs {
-		// pair.Key is the storage key hash (after prefix stripping by iterator)
-		// pair.Value is the storage value
-		key := common.BytesToHash(pair.Key)
-		value := common.BytesToHash(pair.Value)
-		result[key] = value
-	}
-	return result, nil
 }
 
 // GetBalance returns the provided account's balance up to the provided block number.

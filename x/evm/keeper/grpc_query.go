@@ -33,6 +33,7 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -735,30 +736,37 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		evmTxPtr++
 	}
 
-	// For newly deployed contracts (code was empty at height N-1 but now exists
-	// after evmutil replay), enumerate ALL storage slots via ForEachStorage.
-	// Constructor-written slots (name/symbol/owner/etc.) are only visible after
-	// the deploy call has been committed to CacheKVStore.
+	// For newly deployed contracts (mint ops where contract had no code at N-1),
+	// enumerate ALL storage slots at height N using the committed IAVL store.
+	// ctx's store is at N-1 (CacheKVStore), so constructor-written slots aren't
+	// visible there. We need the committed store at height N.
 	if collector != nil {
 		for _, op := range evmutilOps {
 			if op.Type != types.EvmutilOpMint {
 				continue
 			}
-			// Check if this contract was newly deployed in this block
-			// by checking if it has code after replay but had none before.
-			// Note: ctx store is CacheKVStore at N-1 + committed replay state.
+			// Check contract had no code at N-1 (current ctx store)
 			acct := k.GetAccount(ctx, op.To)
-			if acct == nil {
+			if acct != nil && common.BytesToHash(acct.CodeHash) != common.BytesToHash(types.EmptyCodeHash) {
+				continue // contract existed before, not a new deployment
+			}
+			// Get store at height N (committed state after block execution)
+			cms, ok := ctx.MultiStore().(storetypes.CommitMultiStore)
+			if !ok {
+				// CacheMultiStore from gRPC query — get the underlying CommitMultiStore
+				// This may not work in all contexts; skip gracefully.
+				k.Logger(ctx).Error("cannot get CommitMultiStore for ForEachStorage at height N")
 				continue
 			}
-			codeHash := common.BytesToHash(acct.CodeHash)
-			if codeHash == common.BytesToHash(types.EmptyCodeHash) {
+			storeN, err := cms.CacheMultiStoreWithVersion(req.BlockNumber)
+			if err != nil {
+				k.Logger(ctx).Error("failed to get store at height N", "height", req.BlockNumber, "err", err)
 				continue
 			}
-			// Enumerate all storage slots for this contract and add to collector.
-			k.ForEachStorage(ctx, op.To, func(key, value common.Hash) bool {
+			ctxN := ctx.WithMultiStore(storeN)
+			k.ForEachStorage(ctxN, op.To, func(key, value common.Hash) bool {
 				collector.AddStorageChange(op.To, key, value.Bytes())
-				return true // continue iteration
+				return true
 			})
 		}
 	}
