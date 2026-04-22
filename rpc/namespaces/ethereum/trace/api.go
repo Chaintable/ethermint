@@ -139,6 +139,23 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	for addr := range cosmosAddrs {
 		fromToAddress[addr] = struct{}{}
 	}
+	// Include all Cosmos tx signers — pure Cosmos txs (MsgDelegate, MsgVote, etc.)
+	// change the signer's nonce but don't emit transfer/coin events.
+	if txDecoder := api.clientCtx.TxConfig.TxDecoder(); txDecoder != nil {
+		for _, txBytes := range resBlock.Block.Txs {
+			decodedTx, err := txDecoder(txBytes)
+			if err != nil {
+				continue
+			}
+			for _, signer := range decodedTx.GetMsgs() {
+				for _, signerAddr := range signer.GetSigners() {
+					if len(signerAddr) == 20 {
+						fromToAddress[common.BytesToAddress(signerAddr)] = struct{}{}
+					}
+				}
+			}
+		}
+	}
 	// Build tx hash -> receipt map for cross-validation of trace results.
 	// Tracer may incorrectly report OOG transactions as successful, so we
 	// use receipts as the source of truth for status and gasUsed.
