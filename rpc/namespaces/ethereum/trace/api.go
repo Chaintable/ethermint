@@ -151,25 +151,35 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		transaction := transactions[i].(*rpctypes.RPCTransaction)
 		txHash := transaction.Hash.Hex()
 		receipt, err := api.backend.GetTransactionReceipt(transaction.Hash)
-		if err == nil && receipt != nil {
-			var rStatus bool
-			var rGasUsed uint64
-			switch st := receipt["status"].(type) {
-			case hexutil.Uint:
-				rStatus = uint64(st) == 1
-			case string:
-				rStatus = st == "0x1"
-			}
-			switch gu := receipt["gasUsed"].(type) {
-			case hexutil.Uint64:
-				rGasUsed = uint64(gu)
-			case string:
-				rGasUsed, _ = hexutil.DecodeUint64(gu)
-			}
-			receiptMap[strings.ToLower(txHash)] = receiptInfo{
-				status:  rStatus,
-				gasUsed: rGasUsed,
-			}
+		if err != nil || receipt == nil {
+			// P0-3: Receipt lookup failure must not be silent — the entire
+			// cross-validation mechanism exists to catch tracer errors.
+			// Failing the whole block lets ETL retry (usually transient).
+			return nil, fmt.Errorf("receipt lookup failed for tx %s: %w", txHash, err)
+		}
+		var rStatus bool
+		var rGasUsed uint64
+		switch st := receipt["status"].(type) {
+		case hexutil.Uint:
+			rStatus = uint64(st) == 1
+		case string:
+			rStatus = st == "0x1"
+		default:
+			// P0-4: Unknown status type — fail loud rather than defaulting
+			// to false (which would mark all txs as failed).
+			return nil, fmt.Errorf("unexpected receipt status type %T for tx %s", receipt["status"], txHash)
+		}
+		switch gu := receipt["gasUsed"].(type) {
+		case hexutil.Uint64:
+			rGasUsed = uint64(gu)
+		case string:
+			rGasUsed, _ = hexutil.DecodeUint64(gu)
+		default:
+			return nil, fmt.Errorf("unexpected receipt gasUsed type %T for tx %s", receipt["gasUsed"], txHash)
+		}
+		receiptMap[strings.ToLower(txHash)] = receiptInfo{
+			status:  rStatus,
+			gasUsed: rGasUsed,
 		}
 	}
 
