@@ -504,10 +504,11 @@ func (k Keeper) TraceTx(c context.Context, req *types.QueryTraceTxRequest) (*typ
 		return nil, status.Errorf(codes.InvalidArgument, "output limit cannot be negative, got %d", req.TraceConfig.Limit)
 	}
 
-	// minus one to get the context of block beginning
-	contextHeight := req.BlockNumber - 1
+	// Use block N for ctx.BlockHeight so EVM's block.number opcode returns
+	// the correct value. The IAVL store version is already at N-1 (controlled
+	// by gRPC metadata), so state reads are correct.
+	contextHeight := req.BlockNumber
 	if contextHeight < 1 {
-		// 0 is a special value in `ContextWithHeight`
 		contextHeight = 1
 	}
 
@@ -581,10 +582,11 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		return nil, status.Errorf(codes.InvalidArgument, "output limit cannot be negative, got %d", req.TraceConfig.Limit)
 	}
 
-	// minus one to get the context of block beginning
-	contextHeight := req.BlockNumber - 1
+	// Use block N for ctx.BlockHeight so EVM's block.number opcode returns
+	// the correct value. The IAVL store version is already at N-1 (controlled
+	// by gRPC metadata), so state reads are correct.
+	contextHeight := req.BlockNumber
 	if contextHeight < 1 {
-		// 0 is a special value in `ContextWithHeight`
 		contextHeight = 1
 	}
 
