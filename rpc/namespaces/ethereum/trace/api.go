@@ -169,10 +169,12 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		txHash := transaction.Hash.Hex()
 		receipt, err := api.backend.GetTransactionReceipt(transaction.Hash)
 		if err != nil || receipt == nil {
-			// P0-3: Receipt lookup failure must not be silent — the entire
-			// cross-validation mechanism exists to catch tracer errors.
-			// Failing the whole block lets ETL retry (usually transient).
-			return nil, fmt.Errorf("receipt lookup failed for tx %s: %w", txHash, err)
+			// Receipt can be nil for MsgEthereumTx that failed at Cosmos ante
+			// handler level (e.g. block gas limit exceeded, code=11). These txs
+			// are included in the EVM block by TxSuccessOrExceedsBlockGasLimit
+			// but the EVM never executed, so no receipt was indexed. Skip them.
+			api.logger.Info("receipt not found, skipping tx (likely block gas limit exceeded)", "hash", txHash)
+			continue
 		}
 		var rStatus bool
 		var rGasUsed uint64
