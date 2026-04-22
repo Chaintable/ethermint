@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"fmt"
 	"math/big"
 	"strings"
 
@@ -160,10 +161,10 @@ func reconstructEvmutilDiff(
 	b *backend.Backend,
 	blockRes []*abci.ResponseDeliverTx,
 	blockHeight rpctypes.BlockNumber,
-) (*dtypes.TransactionStateDiff, map[common.Address]struct{}) {
+) (*dtypes.TransactionStateDiff, map[common.Address]struct{}, error) {
 	events := extractEvmutilEvents(blockRes)
 	if len(events) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	type contractUser struct {
@@ -180,11 +181,9 @@ func reconstructEvmutilDiff(
 		affectedAddrs[evt.userAddr] = struct{}{}
 		seen[contractUser{evt.contractAddr, evt.userAddr}] = struct{}{}
 		if evt.isTransfer {
-			// EVM-native path: transfer() also changes module account balance.
 			affectedAddrs[evmutilModuleEVMAddress] = struct{}{}
 			seen[contractUser{evt.contractAddr, evmutilModuleEVMAddress}] = struct{}{}
 		} else {
-			// Cosmos-native path: mint()/burn() changes totalSupply.
 			hasMintBurn[evt.contractAddr] = struct{}{}
 		}
 	}
@@ -202,23 +201,24 @@ func reconstructEvmutilDiff(
 		}
 
 		if baseSlot, ok := knownBalanceSlots[cu.contract]; ok {
-			// Known contract: use verified slot directly (O(1) lookup).
 			rawSlot := erc20BalanceSlotAt(cu.user, baseSlot)
-			addStorageChange(b, cu.contract, rawSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash])
+			if _, err := addStorageChange(b, cu.contract, rawSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash]); err != nil {
+				return nil, affectedAddrs, fmt.Errorf("balance slot query failed: %w", err)
+			}
 		} else {
-			// Unknown contract: probe slots 0-255 to find balance change.
-			// This handles new conversion pairs added via governance.
 			for probe := 0; probe <= 255; probe++ {
 				rawSlot := erc20BalanceSlotAt(cu.user, probe)
-				if addStorageChange(b, cu.contract, rawSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash]) {
+				changed, err := addStorageChange(b, cu.contract, rawSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash])
+				if err != nil {
+					return nil, affectedAddrs, fmt.Errorf("balance probe query failed: %w", err)
+				}
+				if changed {
 					break
 				}
 			}
 		}
 	}
 
-	// Check totalSupply changes only for contracts with mint/burn events.
-	// EVM-native conversion pairs use transfer(), which does not change totalSupply.
 	for contract := range hasMintBurn {
 		addrHash := crypto.Keccak256Hash(contract.Bytes())
 		if _, exists := storageDiffMap[addrHash]; !exists {
@@ -227,18 +227,21 @@ func reconstructEvmutilDiff(
 
 		if tsBase, ok := knownTotalSupplySlots[contract]; ok {
 			tsSlot := common.BigToHash(big.NewInt(tsBase))
-			addStorageChange(b, contract, tsSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash])
+			if _, err := addStorageChange(b, contract, tsSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash]); err != nil {
+				return nil, affectedAddrs, fmt.Errorf("totalSupply query failed: %w", err)
+			}
 		} else {
-			// Unknown contract: probe common totalSupply slots.
 			for _, tsBase := range []int64{0, 1, 2, 3, 4, 5, 51, 52, 53} {
 				tsSlot := common.BigToHash(big.NewInt(tsBase))
-				addStorageChange(b, contract, tsSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash])
+				if _, err := addStorageChange(b, contract, tsSlot, heightOrHash, prevHeightOrHash, storageDiffMap[addrHash]); err != nil {
+					return nil, affectedAddrs, fmt.Errorf("totalSupply probe query failed: %w", err)
+				}
 			}
 		}
 	}
 
 	if len(storageDiffMap) == 0 {
-		return nil, affectedAddrs
+		return nil, affectedAddrs, nil
 	}
 
 	diff := dtypes.TransactionStateDiff{
@@ -262,7 +265,7 @@ func reconstructEvmutilDiff(
 		})
 	}
 
-	return &diff, affectedAddrs
+	return &diff, affectedAddrs, nil
 }
 
 // extractEvmutilAffectedAddresses returns all addresses involved in evmutil
@@ -371,22 +374,22 @@ func parseCosmosAddress(s string) (common.Address, bool) {
 }
 
 // addStorageChange reads storage at the given slot for both current and previous
-// block heights. If the value changed, it adds the (slotHash -> newValue) to dest
-// and returns true.
+// block heights. If the value changed, it adds the (slotHash -> newValue) to dest.
+// Returns (changed, error). Error is non-nil if storage query fails.
 func addStorageChange(
 	b *backend.Backend,
 	contract common.Address,
 	slot common.Hash,
 	curHeight, prevHeight rpctypes.BlockNumberOrHash,
 	dest map[common.Hash]*uint256.Int,
-) bool {
+) (bool, error) {
 	curValue, err := b.GetStorageAt(contract, slot.Hex(), curHeight)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("GetStorageAt(%s, %s, cur): %w", contract.Hex(), slot.Hex(), err)
 	}
 	prevValue, err := b.GetStorageAt(contract, slot.Hex(), prevHeight)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("GetStorageAt(%s, %s, prev): %w", contract.Hex(), slot.Hex(), err)
 	}
 	if string(curValue) != string(prevValue) {
 		slotHash := crypto.Keccak256Hash(slot.Bytes())
@@ -395,9 +398,9 @@ func addStorageChange(
 			v = uint256.NewInt(0).SetBytes(curValue)
 		}
 		dest[slotHash] = v
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 // erc20BalanceSlotAt computes the storage slot for an ERC20 balance mapping

@@ -273,7 +273,10 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	// If no stored non-EVM diff (historical blocks processed before
 	// StateDiffCollector), reconstruct from evmutil block events + archive state.
 	if nonEVMStateDiff == nil {
-		evtDiff, _ := reconstructEvmutilDiff(api.backend, blockRes.TxsResults, blockHeight)
+		evtDiff, _, err := reconstructEvmutilDiff(api.backend, blockRes.TxsResults, blockHeight)
+		if err != nil {
+			return nil, fmt.Errorf("reconstructEvmutilDiff failed at height %d: %w", blockHeight, err)
+		}
 		if evtDiff != nil {
 			nonEVMStateDiff = evtDiff
 		}
