@@ -285,11 +285,12 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, transactionStates)
 	// 通过tracer获得的stateDiff拿不到tx的gasUsed的变化，进行后处理
 	// evm暂时有bug 无法trace失败的transaction，hack导致to地址的balance不准确
-	newAccounts, storageContracts, err := api.addGasUsedStateDiff(fromToAddress, stateDiff.NewAccounts, blockFile.StorageContracts, blockHeight)
+	newAccounts, extraNewCodes, storageContracts, err := api.addGasUsedStateDiff(fromToAddress, stateDiff.NewAccounts, stateDiff.NewCodes, blockFile.StorageContracts, blockHeight)
 	if err != nil {
 		return nil, err
 	}
 	stateDiff.NewAccounts = newAccounts
+	stateDiff.NewCodes = append(stateDiff.NewCodes, extraNewCodes...)
 	blockFile.StorageContracts = storageContracts
 	out := &dtypes.DebankOutPut{
 		BlockFile:      blockFile,
@@ -338,40 +339,60 @@ func decodeNonEVMStateDiff(raw interface{}) (*dtypes.TransactionStateDiff, error
 	return &diff, nil
 }
 
-func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, newAccount []dtypes.NewAccount, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []string, error) {
+func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, newAccount []dtypes.NewAccount, existingNewCodes []dtypes.NewCode, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []dtypes.NewCode, []string, error) {
 	var (
 		newAccountMap    = make(map[common.Hash]dtypes.NewAccount)
 		storageChangeMap = make(map[common.Address]struct{})
+		// Track code hashes already in NewCodes from CallTracer.
+		knownCodeHashes  = make(map[common.Hash]struct{})
+		newCodes         = make([]dtypes.NewCode, 0)
 	)
 	for _, account := range newAccount {
 		newAccountMap[account.Address] = account
 	}
+	for _, nc := range existingNewCodes {
+		knownCodeHashes[nc.CodeHash] = struct{}{}
+	}
 	for _, address := range storageChange {
 		storageChangeMap[common.HexToAddress(address)] = struct{}{}
 	}
+	emptyCodeHash := crypto.Keccak256Hash(nil)
 	for addr := range txFromAddress {
 		var addrHash = crypto.Keccak256Hash(addr.Bytes())
 		balance, err := api.backend.GetBalance(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		nonce, err := api.backend.GetTransactionCount(addr, number)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		code, err := api.backend.GetCode(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		var nonceVal uint64
 		if nonce != nil {
 			nonceVal = uint64(*nonce)
 		}
+		codeHash := crypto.Keccak256Hash(code)
 		newAccountMap[addrHash] = dtypes.NewAccount{
 			Address:  addrHash,
 			Balance:  new(uint256.Int).SetBytes((*big.Int)(balance).Bytes()),
 			Nonce:    nonceVal,
-			CodeHash: crypto.Keccak256Hash(code),
+			CodeHash: codeHash,
+		}
+		// If this address has contract code and the code hash is not already
+		// in NewCodes (from CallTracer), add it. This catches contract
+		// deployments from non-EVM paths (e.g. evmutil ConvertCosmosCoinToERC20).
+		if len(code) > 0 && codeHash != emptyCodeHash {
+			if _, known := knownCodeHashes[codeHash]; !known {
+				knownCodeHashes[codeHash] = struct{}{}
+				newCodes = append(newCodes, dtypes.NewCode{
+					CodeHash: codeHash,
+					Code:     code,
+				})
+			}
 		}
 		storageChangeMap[addr] = struct{}{}
 	}
@@ -386,5 +407,5 @@ func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, ne
 	for address := range storageChangeMap {
 		resStorageChange = append(resStorageChange, strings.ToLower(address.String()))
 	}
-	return resNewAccount, resStorageChange, nil
+	return resNewAccount, newCodes, resStorageChange, nil
 }
