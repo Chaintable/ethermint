@@ -133,32 +133,64 @@ func reconstructEvmutilDiff(
 	heightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &blockHeight}
 	storageDiffMap := make(map[common.Hash]map[common.Hash]*uint256.Int)
 
+	prevHeight := blockHeight - 1
+	prevHeightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &prevHeight}
+
 	for cu := range seen {
 		addrHash := crypto.Keccak256Hash(cu.contract.Bytes())
-		rawSlot := erc20BalanceSlot(cu.user)
-		slotHash := crypto.Keccak256Hash(rawSlot.Bytes())
-
-		value, err := b.GetStorageAt(cu.contract, rawSlot.Hex(), heightOrHash)
-		if err != nil {
-			// Do not silently skip — a missing slot could cause leafage state drift.
-			// Log and continue; callers should monitor for these warnings.
-			continue
-		}
-
 		if _, ok := storageDiffMap[addrHash]; !ok {
 			storageDiffMap[addrHash] = make(map[common.Hash]*uint256.Int)
 		}
-		v := uint256.NewInt(0)
-		if len(value) > 0 {
-			v = uint256.NewInt(0).SetBytes(value)
-		}
-		storageDiffMap[addrHash][slotHash] = v
 
-		tsSlot := common.BigToHash(big.NewInt(2))
-		tsSlotHash := crypto.Keccak256Hash(tsSlot.Bytes())
-		tsValue, err := b.GetStorageAt(cu.contract, tsSlot.Hex(), heightOrHash)
-		if err == nil && len(tsValue) > 0 {
-			storageDiffMap[addrHash][tsSlotHash] = uint256.NewInt(0).SetBytes(tsValue)
+		// Find the actual balance mapping slot by probing candidate base slots.
+		// Standard OZ ERC20 uses slot 0, but contracts with inheritance
+		// (Ownable, Pausable, etc.) may use higher slots (e.g. USDT = slot 51).
+		// For each candidate, compute keccak256(abi.encode(user, baseSlot))
+		// and compare storage at height N vs N-1 to detect changes.
+		found := false
+		for baseSlot := 0; baseSlot <= 100; baseSlot++ {
+			rawSlot := erc20BalanceSlotAt(cu.user, baseSlot)
+			curValue, err := b.GetStorageAt(cu.contract, rawSlot.Hex(), heightOrHash)
+			if err != nil {
+				continue
+			}
+			prevValue, err := b.GetStorageAt(cu.contract, rawSlot.Hex(), prevHeightOrHash)
+			if err != nil {
+				continue
+			}
+			// Only include if value actually changed
+			if string(curValue) != string(prevValue) {
+				slotHash := crypto.Keccak256Hash(rawSlot.Bytes())
+				v := uint256.NewInt(0)
+				if len(curValue) > 0 {
+					v = uint256.NewInt(0).SetBytes(curValue)
+				}
+				storageDiffMap[addrHash][slotHash] = v
+				found = true
+				break
+			}
+		}
+		_ = found
+
+		// Also check totalSupply: probe common slots for a scalar (non-mapping) change.
+		for _, tsBase := range []int64{2, 3, 4, 5, 51, 52, 53} {
+			tsSlot := common.BigToHash(big.NewInt(tsBase))
+			curTS, err := b.GetStorageAt(cu.contract, tsSlot.Hex(), heightOrHash)
+			if err != nil {
+				continue
+			}
+			prevTS, err := b.GetStorageAt(cu.contract, tsSlot.Hex(), prevHeightOrHash)
+			if err != nil {
+				continue
+			}
+			if string(curTS) != string(prevTS) {
+				tsSlotHash := crypto.Keccak256Hash(tsSlot.Bytes())
+				v := uint256.NewInt(0)
+				if len(curTS) > 0 {
+					v = uint256.NewInt(0).SetBytes(curTS)
+				}
+				storageDiffMap[addrHash][tsSlotHash] = v
+			}
 		}
 	}
 
@@ -262,11 +294,16 @@ func parseCosmosAddress(s string) (common.Address, bool) {
 	return common.Address{}, false
 }
 
-// erc20BalanceSlot computes the storage slot for an ERC20 balance mapping entry.
-// For OpenZeppelin ERC20, `_balances` is at slot 0.
-// slot = keccak256(abi.encode(address, uint256(0)))
-func erc20BalanceSlot(addr common.Address) common.Hash {
+// erc20BalanceSlotAt computes the storage slot for an ERC20 balance mapping
+// entry at the given base slot index.
+// slot = keccak256(abi.encode(address, uint256(baseSlot)))
+func erc20BalanceSlotAt(addr common.Address, baseSlot int) common.Hash {
 	key := make([]byte, 64)
 	copy(key[12:32], addr.Bytes())
+	// baseSlot in big-endian at bytes 32-63
+	key[63] = byte(baseSlot & 0xff)
+	if baseSlot > 0xff {
+		key[62] = byte((baseSlot >> 8) & 0xff)
+	}
 	return crypto.Keccak256Hash(key)
 }
