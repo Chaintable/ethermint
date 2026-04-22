@@ -33,7 +33,6 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	storetypes "github.com/cosmos/cosmos-sdk/store/types"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -736,41 +735,6 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		evmTxPtr++
 	}
 
-	// For newly deployed contracts (mint ops where contract had no code at N-1),
-	// enumerate ALL storage slots at height N using the committed IAVL store.
-	// ctx's store is at N-1 (CacheKVStore), so constructor-written slots aren't
-	// visible there. We need the committed store at height N.
-	if collector != nil {
-		for _, op := range evmutilOps {
-			if op.Type != types.EvmutilOpMint {
-				continue
-			}
-			// Check contract had no code at N-1 (current ctx store)
-			acct := k.GetAccount(ctx, op.To)
-			if acct != nil && common.BytesToHash(acct.CodeHash) != common.BytesToHash(types.EmptyCodeHash) {
-				continue // contract existed before, not a new deployment
-			}
-			// Get store at height N (committed state after block execution)
-			cms, ok := ctx.MultiStore().(storetypes.CommitMultiStore)
-			if !ok {
-				// CacheMultiStore from gRPC query — get the underlying CommitMultiStore
-				// This may not work in all contexts; skip gracefully.
-				k.Logger(ctx).Error("cannot get CommitMultiStore for ForEachStorage at height N")
-				continue
-			}
-			storeN, err := cms.CacheMultiStoreWithVersion(req.BlockNumber)
-			if err != nil {
-				k.Logger(ctx).Error("failed to get store at height N", "height", req.BlockNumber, "err", err)
-				continue
-			}
-			ctxN := ctx.WithMultiStore(storeN)
-			k.ForEachStorage(ctxN, op.To, func(key, value common.Hash) bool {
-				collector.AddStorageChange(op.To, key, value.Bytes())
-				return true
-			})
-		}
-	}
-
 	// Append evmutil state diff sentinel if any changes were captured.
 	if collector != nil && !collector.IsEmpty() {
 		diff := collector.ToStateDiff()
@@ -897,6 +861,31 @@ func (k Keeper) BaseFee(c context.Context, _ *types.QueryBaseFeeRequest) (*types
 	}
 
 	return res, nil
+}
+
+// StorageAll enumerates all storage key-value pairs for a contract address.
+// Uses ForEachStorage with the context's store version (controlled by gRPC metadata height).
+func (k Keeper) StorageAll(c context.Context, req *types.QueryStorageAllRequest) (*types.QueryStorageAllResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "empty request")
+	}
+	if err := ethermint.ValidateAddress(req.Address); err != nil {
+		return nil, status.Error(codes.InvalidArgument, types.ErrZeroAddress.Error())
+	}
+
+	ctx := sdk.UnwrapSDKContext(c)
+	address := common.HexToAddress(req.Address)
+
+	var entries []types.StorageEntry
+	k.ForEachStorage(ctx, address, func(key, value common.Hash) bool {
+		entries = append(entries, types.StorageEntry{
+			Key:   key.Hex(),
+			Value: value.Hex(),
+		})
+		return true
+	})
+
+	return &types.QueryStorageAllResponse{Entries: entries}, nil
 }
 
 // getChainID parse chainID from current context if not provided

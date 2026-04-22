@@ -297,6 +297,10 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	stateDiff.NewCodes = append(stateDiff.NewCodes, extraNewCodes...)
 	blockFile.StorageContracts = storageContracts
 
+	// For newly deployed contracts, enumerate ALL storage via gRPC StorageAll
+	// at height N to catch constructor-written metadata slots (name/symbol/owner).
+	api.enrichNewContractStorage(&stateDiff, fromToAddress, blockHeight)
+
 	out := &dtypes.DebankOutPut{
 		BlockFile:      blockFile,
 		Header:         stateHeader,
@@ -413,6 +417,79 @@ func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, ne
 		resStorageChange = append(resStorageChange, strings.ToLower(address.String()))
 	}
 	return resNewAccount, newCodes, resStorageChange, nil
+}
+
+// enrichNewContractStorage detects contracts newly deployed in this block
+// (code was empty at N-1, non-empty at N) and enumerates ALL their storage
+// at height N via gRPC StorageAll (ForEachStorage). Missing slots are added
+// to stateDiff.StorageDiff.
+func (api *API) enrichNewContractStorage(
+	stateDiff *dtypes.BlockStorageDiff,
+	fromToAddress map[common.Address]struct{},
+	blockHeight rpctypes.BlockNumber,
+) {
+	emptyCodeHash := crypto.Keccak256Hash(nil)
+	prevHeight := blockHeight - 1
+
+	for addr := range fromToAddress {
+		// Check code at N
+		heightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &blockHeight}
+		codeN, err := api.backend.GetCode(addr, heightOrHash)
+		if err != nil || len(codeN) == 0 || crypto.Keccak256Hash(codeN) == emptyCodeHash {
+			continue
+		}
+
+		// Check code at N-1 — if non-empty, not a new deployment
+		prevHeightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &prevHeight}
+		codePrev, _ := api.backend.GetCode(addr, prevHeightOrHash)
+		if len(codePrev) > 0 && crypto.Keccak256Hash(codePrev) != emptyCodeHash {
+			continue
+		}
+
+		// New contract: enumerate all storage at height N
+		allStorage, err := api.backend.GetAllContractStorage(addr, blockHeight)
+		if err != nil {
+			api.logger.Debug("failed to enumerate new contract storage", "addr", addr.Hex(), "err", err)
+			continue
+		}
+		if len(allStorage) == 0 {
+			continue
+		}
+
+		// Merge into existing StorageDiff entry or create new one
+		addrHash := crypto.Keccak256Hash(addr.Bytes())
+		var found bool
+		for i, entry := range stateDiff.StorageDiff {
+			if entry.Address == addrHash {
+				existingSlots := make(map[common.Hash]struct{})
+				for _, pair := range entry.Values {
+					existingSlots[pair.Index] = struct{}{}
+				}
+				for slotKey, slotValue := range allStorage {
+					if _, exists := existingSlots[slotKey]; !exists {
+						v := uint256.NewInt(0).SetBytes(slotValue.Bytes())
+						stateDiff.StorageDiff[i].Values = append(stateDiff.StorageDiff[i].Values, dtypes.IndexValuePair{
+							Index: slotKey,
+							Value: v,
+						})
+					}
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			pairs := make([]dtypes.IndexValuePair, 0, len(allStorage))
+			for slotKey, slotValue := range allStorage {
+				v := uint256.NewInt(0).SetBytes(slotValue.Bytes())
+				pairs = append(pairs, dtypes.IndexValuePair{Index: slotKey, Value: v})
+			}
+			stateDiff.StorageDiff = append(stateDiff.StorageDiff, dtypes.AccountStorageDiff{
+				Address: addrHash,
+				Values:  pairs,
+			})
+		}
+	}
 }
 
 // enrichNewContractStorage detects contracts newly deployed in this block and
