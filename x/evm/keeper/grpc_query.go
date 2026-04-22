@@ -632,6 +632,12 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	// Replay EVM txs and evmutil ops interleaved in original block tx order.
 	// evmutil ops must execute at their correct position so subsequent EVM txs
 	// see the correct intermediate state.
+	k.Logger(ctx).Info("TraceBlock interleave",
+		"evmTxs", len(req.Txs),
+		"evmutilOps", len(evmutilOps),
+		"evmTxBlockIndices", req.EvmTxBlockIndices,
+		"blockNumber", req.BlockNumber)
+
 	txConfig := statedb.NewEmptyTxConfig(common.BytesToHash(ctx.HeaderHash().Bytes()))
 	evmTxPtr := 0  // pointer into req.Txs
 	evmutilPtr := 0 // pointer into evmutilOps
@@ -664,8 +670,12 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 				}
 			}
 			msg := types.BuildEVMMessage(op)
-			if _, err := k.ApplyMessageWithConfig(ctx, msg, collector, true, cfg, txConfig); err != nil {
+			res, err := k.ApplyMessageWithConfig(ctx, msg, collector, true, cfg, txConfig)
+			if err != nil {
 				k.Logger(ctx).Error("evmutil op replay failed", "type", op.Type, "blockTxIdx", blockIdx, "err", err)
+			} else {
+				k.Logger(ctx).Info("evmutil op replayed", "type", op.Type, "blockTxIdx", blockIdx,
+					"from", op.From.Hex(), "to", op.To.Hex(), "gasUsed", res.GasUsed, "vmError", res.VmError)
 			}
 			continue
 		}
