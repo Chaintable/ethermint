@@ -265,6 +265,25 @@ func reconstructEvmutilDiff(
 	return &diff, affectedAddrs
 }
 
+// extractEvmutilAffectedAddresses returns all addresses involved in evmutil
+// conversion events (contract addresses + user addresses + module address).
+// Used to ensure addGasUsedStateDiff queries their code (for NewCodes).
+func extractEvmutilAffectedAddresses(txResults []*abci.ResponseDeliverTx) map[common.Address]struct{} {
+	events := extractEvmutilEvents(txResults)
+	if len(events) == 0 {
+		return nil
+	}
+	addrs := make(map[common.Address]struct{})
+	for _, evt := range events {
+		addrs[evt.contractAddr] = struct{}{}
+		addrs[evt.userAddr] = struct{}{}
+		if evt.isTransfer {
+			addrs[evmutilModuleEVMAddress] = struct{}{}
+		}
+	}
+	return addrs
+}
+
 func extractEvmutilEvents(txResults []*abci.ResponseDeliverTx) []evmutilEvent {
 	var events []evmutilEvent
 	for _, txResult := range txResults {
