@@ -21,8 +21,10 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/eth/tracers/logger"
 
@@ -39,6 +41,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	ethparams "github.com/ethereum/go-ethereum/params"
 
+	dtracer "github.com/evmos/ethermint/debank/tracer"
 	ethermint "github.com/evmos/ethermint/types"
 	"github.com/evmos/ethermint/x/evm/statedb"
 	"github.com/evmos/ethermint/x/evm/types"
@@ -246,6 +249,11 @@ func (k Keeper) EthCall(c context.Context, req *types.EthCallRequest) (*types.Ms
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
+	// Batch simulation mode: process multiple transactions sequentially
+	if len(args.Args) > 0 {
+		return k.ethCallBatch(ctx, req, &args, cfg)
+	}
+
 	// ApplyMessageWithConfig expect correct nonce set in msg
 	nonce := k.GetNonce(ctx, args.GetFrom())
 	args.Nonce = (*hexutil.Uint64)(&nonce)
@@ -264,6 +272,100 @@ func (k Keeper) EthCall(c context.Context, req *types.EthCallRequest) (*types.Ms
 	}
 
 	return res, nil
+}
+
+// ethCallBatch handles batch simulation of multiple transactions.
+// State changes from earlier transactions are visible to later ones.
+func (k Keeper) ethCallBatch(ctx sdk.Context, req *types.EthCallRequest, args *types.TransactionArgs, cfg *statedb.EVMConfig) (*types.MsgEthereumTxResponse, error) {
+	simulateResList := make([]types.DebankSingleSimulateResult, 0, len(args.Args))
+	txConfig := statedb.NewEmptyTxConfig(common.BytesToHash(ctx.HeaderHash()))
+
+	for i, arg := range args.Args {
+		nonce := k.GetNonce(ctx, arg.GetFrom())
+		arg.Nonce = (*hexutil.Uint64)(&nonce)
+		msg, err := arg.ToMessage(req.GasCap, cfg.BaseFee)
+		if err != nil {
+			simulateResList = append(simulateResList, types.DebankSingleSimulateResult{
+				Code: types.SimulateErrorUnKnown,
+				Err:  err.Error(),
+			})
+			continue
+		}
+
+		blockHash := common.BytesToHash(ctx.HeaderHash())
+		if args.BlockHash != nil {
+			blockHash = *args.BlockHash
+		}
+		tCtx := &tracers.Context{
+			BlockHash: blockHash,
+			TxIndex:   int(k.GetTxIndexTransient(ctx) + 1),
+			TxHash:    common.BigToHash(big.NewInt(int64(i + 1))),
+		}
+		tracer := dtracer.NewCallTracer(tCtx)
+
+		// pass true to commit StateDB so state changes persist across batch
+		res, err := k.ApplyMessageWithConfig(ctx, msg, tracer, true, cfg, txConfig)
+		if err != nil {
+			simulateResult := types.DebankSingleSimulateResult{
+				Code: types.SimulateErrorUnKnown,
+				Err:  err.Error(),
+			}
+			if res != nil {
+				simulateResult.GasUsed = res.GasUsed
+			}
+			simulateResList = append(simulateResList, simulateResult)
+			continue
+		}
+
+		traces := make([]types.DebankTrace, 0)
+		events := make([]types.DebankEvent, 0)
+		for _, trace := range tracer.GetTraces() {
+			traces = append(traces, types.FromTracerTrace(trace))
+		}
+		for _, event := range tracer.GetLogs() {
+			events = append(events, types.FromTracerEvent(event))
+		}
+
+		simulateResult := types.DebankSingleSimulateResult{
+			Traces: traces,
+			Events: events,
+		}
+		if res != nil {
+			simulateResult.GasUsed = res.GasUsed
+		}
+		if res != nil && res.Failed() {
+			for _, trace := range tracer.GetErrorTraces() {
+				simulateResult.Traces = append(simulateResult.Traces, types.FromTracerTrace(trace))
+			}
+			for _, event := range tracer.GetErrorLogs() {
+				simulateResult.Events = append(simulateResult.Events, types.FromTracerEvent(event))
+			}
+			simulateResult.Code = types.SimulateErrorUnKnown
+			simulateResult.Err = res.VmError
+			if strings.HasPrefix(res.VmError, "execution reverted") {
+				simulateResult.Code = types.SimulateErrorReverted
+				reason, _ := abi.UnpackRevert(res.Revert())
+				if reason != "" {
+					simulateResult.Err = reason
+				}
+			}
+			if strings.HasPrefix(res.VmError, "out of gas") {
+				simulateResult.Code = types.SimulateErrorReverted
+			}
+			if strings.HasPrefix(res.VmError, "insufficient") {
+				simulateResult.Code = types.SimulateErrorInsufficientBalane
+			}
+		}
+		simulateResList = append(simulateResList, simulateResult)
+	}
+
+	bz, err := json.Marshal(&simulateResList)
+	if err != nil {
+		return nil, err
+	}
+	return &types.MsgEthereumTxResponse{
+		Ret: bz,
+	}, nil
 }
 
 // EstimateGas implements eth_estimateGas rpc api.
@@ -451,7 +553,7 @@ func (k Keeper) TraceTx(c context.Context, req *types.QueryTraceTxRequest) (*typ
 		_ = json.Unmarshal([]byte(req.TraceConfig.TracerJsonConfig), &tracerConfig)
 	}
 
-	result, _, err := k.traceTx(ctx, cfg, txConfig, signer, tx, req.TraceConfig, false, tracerConfig)
+	result, _, _, err := k.traceTx(ctx, cfg, txConfig, signer, tx, req.TraceConfig, false, tracerConfig)
 	if err != nil {
 		// error will be returned with detail status from traceTx
 		return nil, err
@@ -503,19 +605,34 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	txsLength := len(req.Txs)
 	results := make([]*types.TxTraceResult, 0, txsLength)
 
+	// Initialize block gas meter to correctly handle block gas limit reverts.
+	// Without this, txs that should fail due to cumulative block gas exceeding
+	// the limit would succeed during trace replay.
+	blockGasLimit := ethermint.BlockGasLimit(ctx)
+	var blockGasConsumed uint64
+
 	txConfig := statedb.NewEmptyTxConfig(common.BytesToHash(ctx.HeaderHash().Bytes()))
 	for i, tx := range req.Txs {
 		result := types.TxTraceResult{}
 		ethTx := tx.AsTransaction()
 		txConfig.TxHash = ethTx.Hash()
 		txConfig.TxIndex = uint(i)
-		traceResult, logIndex, err := k.traceTx(ctx, cfg, txConfig, signer, ethTx, req.TraceConfig, true, nil)
+
+		// Check if this tx would exceed block gas limit
+		if blockGasLimit > 0 && blockGasConsumed >= blockGasLimit {
+			result.Error = "out of gas in location: block gas meter"
+			results = append(results, &result)
+			continue
+		}
+
+		traceResult, logIndex, gasUsed, err := k.traceTx(ctx, cfg, txConfig, signer, ethTx, req.TraceConfig, true, nil)
 		if err != nil {
 			result.Error = err.Error()
 		} else {
 			txConfig.LogIndex = logIndex
 			result.Result = traceResult
 		}
+		blockGasConsumed += gasUsed
 		results = append(results, &result)
 	}
 
@@ -529,7 +646,7 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	}, nil
 }
 
-// traceTx do trace on one transaction, it returns a tuple: (traceResult, nextLogIndex, error).
+// traceTx do trace on one transaction, it returns a tuple: (traceResult, nextLogIndex, gasUsed, error).
 func (k *Keeper) traceTx(
 	ctx sdk.Context,
 	cfg *statedb.EVMConfig,
@@ -539,7 +656,7 @@ func (k *Keeper) traceTx(
 	traceConfig *types.TraceConfig,
 	commitMessage bool,
 	tracerJSONConfig json.RawMessage,
-) (*interface{}, uint, error) {
+) (*interface{}, uint, uint64, error) {
 	// Assemble the structured logger or the JavaScript tracer
 	var (
 		tracer    tracers.Tracer
@@ -549,7 +666,7 @@ func (k *Keeper) traceTx(
 	)
 	msg, err := tx.AsMessage(signer, cfg.BaseFee)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, 0, status.Error(codes.Internal, err.Error())
 	}
 
 	if traceConfig == nil {
@@ -578,16 +695,18 @@ func (k *Keeper) traceTx(
 		TxHash:    txConfig.TxHash,
 	}
 
-	if traceConfig.Tracer != "" {
+	if traceConfig.Tracer == dtracer.Name {
+		tracer = dtracer.NewCallTracer(tCtx)
+	} else if traceConfig.Tracer != "" {
 		if tracer, err = tracers.New(traceConfig.Tracer, tCtx, tracerJSONConfig); err != nil {
-			return nil, 0, status.Error(codes.Internal, err.Error())
+			return nil, 0, 0, status.Error(codes.Internal, err.Error())
 		}
 	}
 
 	// Define a meaningful timeout of a single transaction trace
 	if traceConfig.Timeout != "" {
 		if timeout, err = time.ParseDuration(traceConfig.Timeout); err != nil {
-			return nil, 0, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
+			return nil, 0, 0, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
 		}
 	}
 
@@ -604,16 +723,16 @@ func (k *Keeper) traceTx(
 
 	res, err := k.ApplyMessageWithConfig(ctx, msg, tracer, commitMessage, cfg, txConfig)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, 0, status.Error(codes.Internal, err.Error())
 	}
 
 	var result interface{}
 	result, err = tracer.GetResult()
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, 0, status.Error(codes.Internal, err.Error())
 	}
 
-	return &result, txConfig.LogIndex + uint(len(res.Logs)), nil
+	return &result, txConfig.LogIndex + uint(len(res.Logs)), res.GasUsed, nil
 }
 
 // BaseFee implements the Query/BaseFee gRPC method
