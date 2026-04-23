@@ -549,7 +549,10 @@ func (api *API) getModuleAccountAddresses(ctx context.Context) ([]common.Address
 	}
 	addrs := make([]common.Address, 0, len(res.Accounts))
 	for _, accAny := range res.Accounts {
-		var acc authtypes.ModuleAccountI
+		// Use AccountI, not ModuleAccountI: only AccountI is registered in the
+		// ethermint InterfaceRegistry. ModuleAccount implements AccountI via its
+		// embedded BaseAccount, and GetAddress() is all we need.
+		var acc authtypes.AccountI
 		if err := api.clientCtx.InterfaceRegistry.UnpackAny(accAny, &acc); err != nil {
 			return nil, fmt.Errorf("unpack module account: %w", err)
 		}
