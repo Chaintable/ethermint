@@ -16,6 +16,7 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/server"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -52,6 +53,12 @@ type API struct {
 	clientCtx   client.Context
 	queryClient *rpctypes.QueryClient
 	handler     *HandlerT
+
+	// Cache of Kava module account EVM addresses (fee_collector, evm, evmutil, ...).
+	// Queried once via auth.Query/ModuleAccounts and reused for every DebankBlockRaw call.
+	// Failures are not cached — the next call will retry.
+	moduleAddrsMu sync.Mutex
+	moduleAddrs   []common.Address
 }
 
 // NewAPI creates a new API definition for the tracing methods of the Ethereum service.
@@ -270,6 +277,18 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	for addr := range evtAddrs {
 		fromToAddress[addr] = struct{}{}
 	}
+	// Module accounts (e.g. fee_collector, evm, evmutil) can have akava balance
+	// changes via EvmBankKeeper paths that bypass bank events — notably sub-1e12
+	// akava fee collection / refund on every EVM tx. Those changes are invisible
+	// to the event/signers-based discovery above, so we diff N-1 vs N directly
+	// against the known module account set and merge any changed addresses.
+	moduleChanged, err := api.collectChangedModuleAccounts(ctx, blockHeight)
+	if err != nil {
+		return nil, fmt.Errorf("collectChangedModuleAccounts failed at height %d: %w", blockHeight, err)
+	}
+	for addr := range moduleChanged {
+		fromToAddress[addr] = struct{}{}
+	}
 	// If no stored non-EVM diff (historical blocks processed before
 	// StateDiffCollector), reconstruct from evmutil block events + archive state.
 	if nonEVMStateDiff == nil {
@@ -316,7 +335,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	return out, nil
 }
 
-func (api API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (*rpctypes.DebankOutPutJs, error) {
+func (api *API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (*rpctypes.DebankOutPutJs, error) {
 	output, err := api.DebankBlockRaw(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
@@ -357,7 +376,7 @@ func decodeNonEVMStateDiff(raw interface{}) (*dtypes.TransactionStateDiff, error
 // addGasUsedStateDiff returns (newAccounts, newCodes, contractsWithCodeAtN, storageContracts, error).
 // contractsWithCodeAtN is the set of addresses that have non-empty code at height N,
 // used by enrichNewContractStorage to avoid redundant GetCode calls.
-func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, newAccount []dtypes.NewAccount, existingNewCodes []dtypes.NewCode, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []dtypes.NewCode, map[common.Address]struct{}, []string, error) {
+func (api *API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, newAccount []dtypes.NewAccount, existingNewCodes []dtypes.NewCode, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []dtypes.NewCode, map[common.Address]struct{}, []string, error) {
 	var (
 		newAccountMap        = make(map[common.Hash]dtypes.NewAccount)
 		storageChangeMap     = make(map[common.Address]struct{})
@@ -503,4 +522,70 @@ func (api *API) enrichNewContractStorage(
 		}
 	}
 	return nil
+}
+
+// getModuleAccountAddresses returns the EVM addresses of every Kava module
+// account (fee_collector, evm, evmutil, distribution, ...).
+//
+// Kava's EvmBankKeeper mutates module-account akava balances via paths that do
+// not emit bank events (transfer/coin_spent/coin_received) — sub-1e12 fee
+// collection and refund are the canonical examples. Those changes are invisible
+// to the event/signers-based address discovery used by DebankBlockRaw, so we
+// need an independent list of module account addresses to diff against.
+//
+// The list is queried once via auth.Query/ModuleAccounts and cached for the
+// lifetime of the API instance. Failures are NOT cached — a transient gRPC
+// error won't permanently blind discovery; the next call retries.
+func (api *API) getModuleAccountAddresses(ctx context.Context) ([]common.Address, error) {
+	api.moduleAddrsMu.Lock()
+	defer api.moduleAddrsMu.Unlock()
+	if len(api.moduleAddrs) > 0 {
+		return api.moduleAddrs, nil
+	}
+	queryClient := authtypes.NewQueryClient(api.clientCtx)
+	res, err := queryClient.ModuleAccounts(ctx, &authtypes.QueryModuleAccountsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("query module accounts: %w", err)
+	}
+	addrs := make([]common.Address, 0, len(res.Accounts))
+	for _, accAny := range res.Accounts {
+		var acc authtypes.ModuleAccountI
+		if err := api.clientCtx.InterfaceRegistry.UnpackAny(accAny, &acc); err != nil {
+			return nil, fmt.Errorf("unpack module account: %w", err)
+		}
+		addrs = append(addrs, common.BytesToAddress(acc.GetAddress().Bytes()))
+	}
+	api.moduleAddrs = addrs
+	return addrs, nil
+}
+
+// collectChangedModuleAccounts returns the subset of Kava module account
+// EVM addresses whose eth_getBalance differs between heights N-1 and N.
+//
+// Callers should merge the result into fromToAddress before addGasUsedStateDiff
+// runs so that module accounts with sub-1e12 akava changes (which emit no bank
+// events) still end up in state_diff.NewAccounts with correct balance/nonce/code.
+func (api *API) collectChangedModuleAccounts(ctx context.Context, number rpctypes.BlockNumber) (map[common.Address]struct{}, error) {
+	addrs, err := api.getModuleAccountAddresses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prev := number - 1
+	currHash := rpctypes.BlockNumberOrHash{BlockNumber: &number}
+	prevHash := rpctypes.BlockNumberOrHash{BlockNumber: &prev}
+	changed := make(map[common.Address]struct{})
+	for _, addr := range addrs {
+		balCurr, err := api.backend.GetBalance(addr, currHash)
+		if err != nil {
+			return nil, fmt.Errorf("GetBalance(%s, N=%d): %w", addr.Hex(), number, err)
+		}
+		balPrev, err := api.backend.GetBalance(addr, prevHash)
+		if err != nil {
+			return nil, fmt.Errorf("GetBalance(%s, N-1=%d): %w", addr.Hex(), prev, err)
+		}
+		if (*big.Int)(balCurr).Cmp((*big.Int)(balPrev)) != 0 {
+			changed[addr] = struct{}{}
+		}
+	}
+	return changed, nil
 }

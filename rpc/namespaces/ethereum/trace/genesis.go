@@ -7,7 +7,7 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
-func (api API) onGenesisBlock(block map[string]interface{}) (*dtypes.DebankOutPut, error) {
+func (api *API) onGenesisBlock(block map[string]interface{}) (*dtypes.DebankOutPut, error) {
 	header := dtracer.BuildPilelineBlockHeader(block)
 	blockDiff := &dtypes.BlockStorageDiff{
 		Hash:            header.StateRoot,
