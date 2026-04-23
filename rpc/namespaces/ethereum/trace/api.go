@@ -292,7 +292,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, transactionStates)
 	// 通过tracer获得的stateDiff拿不到tx的gasUsed的变化，进行后处理
 	// evm暂时有bug 无法trace失败的transaction，hack导致to地址的balance不准确
-	newAccounts, extraNewCodes, storageContracts, err := api.addGasUsedStateDiff(fromToAddress, stateDiff.NewAccounts, stateDiff.NewCodes, blockFile.StorageContracts, blockHeight)
+	newAccounts, extraNewCodes, contractsWithCodeAtN, storageContracts, err := api.addGasUsedStateDiff(fromToAddress, stateDiff.NewAccounts, stateDiff.NewCodes, blockFile.StorageContracts, blockHeight)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +302,10 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 
 	// For newly deployed contracts, enumerate ALL storage via gRPC StorageAll
 	// at height N to catch constructor-written metadata slots (name/symbol/owner).
-	api.enrichNewContractStorage(&stateDiff, fromToAddress, blockHeight)
+	// Only checks addresses that have code at N (from addGasUsedStateDiff cache).
+	if err := api.enrichNewContractStorage(&stateDiff, contractsWithCodeAtN, blockHeight); err != nil {
+		return nil, err
+	}
 
 	out := &dtypes.DebankOutPut{
 		BlockFile:      blockFile,
@@ -351,13 +354,16 @@ func decodeNonEVMStateDiff(raw interface{}) (*dtypes.TransactionStateDiff, error
 	return &diff, nil
 }
 
-func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, newAccount []dtypes.NewAccount, existingNewCodes []dtypes.NewCode, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []dtypes.NewCode, []string, error) {
+// addGasUsedStateDiff returns (newAccounts, newCodes, contractsWithCodeAtN, storageContracts, error).
+// contractsWithCodeAtN is the set of addresses that have non-empty code at height N,
+// used by enrichNewContractStorage to avoid redundant GetCode calls.
+func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, newAccount []dtypes.NewAccount, existingNewCodes []dtypes.NewCode, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []dtypes.NewCode, map[common.Address]struct{}, []string, error) {
 	var (
-		newAccountMap    = make(map[common.Hash]dtypes.NewAccount)
-		storageChangeMap = make(map[common.Address]struct{})
-		// Track code hashes already in NewCodes from CallTracer.
-		knownCodeHashes  = make(map[common.Hash]struct{})
-		newCodes         = make([]dtypes.NewCode, 0)
+		newAccountMap        = make(map[common.Hash]dtypes.NewAccount)
+		storageChangeMap     = make(map[common.Address]struct{})
+		knownCodeHashes      = make(map[common.Hash]struct{})
+		newCodes             = make([]dtypes.NewCode, 0)
+		contractsWithCodeAtN = make(map[common.Address]struct{})
 	)
 	for _, account := range newAccount {
 		newAccountMap[account.Address] = account
@@ -373,15 +379,15 @@ func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, ne
 		var addrHash = crypto.Keccak256Hash(addr.Bytes())
 		balance, err := api.backend.GetBalance(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		nonce, err := api.backend.GetTransactionCount(addr, number)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		code, err := api.backend.GetCode(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		var nonceVal uint64
 		if nonce != nil {
@@ -394,10 +400,8 @@ func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, ne
 			Nonce:    nonceVal,
 			CodeHash: codeHash,
 		}
-		// If this address has contract code and the code hash is not already
-		// in NewCodes (from CallTracer), add it. This catches contract
-		// deployments from non-EVM paths (e.g. evmutil ConvertCosmosCoinToERC20).
 		if len(code) > 0 && codeHash != emptyCodeHash {
+			contractsWithCodeAtN[addr] = struct{}{}
 			if _, known := knownCodeHashes[codeHash]; !known {
 				knownCodeHashes[codeHash] = struct{}{}
 				newCodes = append(newCodes, dtypes.NewCode{
@@ -419,32 +423,36 @@ func (api API) addGasUsedStateDiff(txFromAddress map[common.Address]struct{}, ne
 	for address := range storageChangeMap {
 		resStorageChange = append(resStorageChange, strings.ToLower(address.String()))
 	}
-	return resNewAccount, newCodes, resStorageChange, nil
+	return resNewAccount, newCodes, contractsWithCodeAtN, resStorageChange, nil
 }
 
-// enrichNewContractStorage detects contracts newly deployed in this block
-// (code was empty at N-1, non-empty at N) and enumerates ALL their storage
-// at height N via gRPC StorageAll (ForEachStorage). Missing slots are added
-// to stateDiff.StorageDiff.
+// enrichNewContractStorage checks addresses known to have code at height N
+// (from addGasUsedStateDiff) and determines if they were newly deployed in
+// this block by checking GetCode(N-1). For new contracts, enumerates ALL
+// storage at height N via gRPC StorageAll (ForEachStorage) and adds missing
+// slots to stateDiff.StorageDiff.
+//
+// Performance: only calls GetCode(N-1) for addresses with code at N (typically
+// 0-5 per block), avoiding the previous O(fromToAddress) redundant queries.
 func (api *API) enrichNewContractStorage(
 	stateDiff *dtypes.BlockStorageDiff,
-	fromToAddress map[common.Address]struct{},
+	contractsWithCodeAtN map[common.Address]struct{},
 	blockHeight rpctypes.BlockNumber,
-) {
+) error {
+	if len(contractsWithCodeAtN) == 0 {
+		return nil
+	}
+
 	emptyCodeHash := crypto.Keccak256Hash(nil)
 	prevHeight := blockHeight - 1
+	prevHeightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &prevHeight}
 
-	for addr := range fromToAddress {
-		// Check code at N
-		heightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &blockHeight}
-		codeN, err := api.backend.GetCode(addr, heightOrHash)
-		if err != nil || len(codeN) == 0 || crypto.Keccak256Hash(codeN) == emptyCodeHash {
-			continue
-		}
-
+	for addr := range contractsWithCodeAtN {
 		// Check code at N-1 — if non-empty, not a new deployment
-		prevHeightOrHash := rpctypes.BlockNumberOrHash{BlockNumber: &prevHeight}
-		codePrev, _ := api.backend.GetCode(addr, prevHeightOrHash)
+		codePrev, err := api.backend.GetCode(addr, prevHeightOrHash)
+		if err != nil {
+			return fmt.Errorf("GetCode(%s, N-1) failed: %w", addr.Hex(), err)
+		}
 		if len(codePrev) > 0 && crypto.Keccak256Hash(codePrev) != emptyCodeHash {
 			continue
 		}
@@ -452,8 +460,7 @@ func (api *API) enrichNewContractStorage(
 		// New contract: enumerate all storage at height N
 		allStorage, err := api.backend.GetAllContractStorage(addr, blockHeight)
 		if err != nil {
-			api.logger.Debug("failed to enumerate new contract storage", "addr", addr.Hex(), "err", err)
-			continue
+			return fmt.Errorf("GetAllContractStorage(%s, N) failed: %w", addr.Hex(), err)
 		}
 		if len(allStorage) == 0 {
 			continue
@@ -469,7 +476,6 @@ func (api *API) enrichNewContractStorage(
 					existingSlots[pair.Index] = struct{}{}
 				}
 				for slotKey, slotValue := range allStorage {
-					// Hash the raw key to match pipeline convention: Index = keccak(rawKey)
 					slotIndex := crypto.Keccak256Hash(slotKey.Bytes())
 					if _, exists := existingSlots[slotIndex]; !exists {
 						v := uint256.NewInt(0).SetBytes(slotValue.Bytes())
@@ -496,9 +502,5 @@ func (api *API) enrichNewContractStorage(
 			})
 		}
 	}
+	return nil
 }
-
-// enrichNewContractStorage detects contracts newly deployed in this block and
-// enumerates ALL their storage slots via ABCI subspace query at height N.
-// Missing slots are added to stateDiff.StorageDiff. This catches constructor-
-// written metadata (name/symbol/owner) from non-EVM deployment paths (evmutil).
