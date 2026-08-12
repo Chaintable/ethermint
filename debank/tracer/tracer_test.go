@@ -60,3 +60,77 @@ func TestFailedParentRoutesWholeSubtreeToErrorTraces(t *testing.T) {
 		t.Errorf("logs/error_logs = %d/%d, want 0/1", len(tracer.logs), len(tracer.errorLogs))
 	}
 }
+
+func TestFailedBranchDoesNotMoveSuccessfulSibling(t *testing.T) {
+	failedDescendant := callFrame{Type: vm.CALL, To: testAddress(3)}
+	failedChild := callFrame{
+		Type:  vm.CALL,
+		To:    testAddress(2),
+		Error: vm.ErrExecutionReverted.Error(),
+		Calls: []callFrame{failedDescendant},
+	}
+	successfulChild := callFrame{Type: vm.CALL, To: testAddress(4)}
+	root := callFrame{
+		Type:  vm.CALL,
+		To:    testAddress(1),
+		Calls: []callFrame{failedChild, successfulChild},
+	}
+
+	tracer := NewCallTracer(&tracers.Context{TxHash: common.HexToHash("0x2")})
+	tracer.callstack = []callFrame{root}
+	tracer.CaptureTxEnd(0)
+
+	if len(tracer.traces) != 2 || len(tracer.errorTraces) != 2 {
+		t.Fatalf(
+			"traces/error_traces = %d/%d, want 2/2",
+			len(tracer.traces),
+			len(tracer.errorTraces),
+		)
+	}
+	if got := findTraceError(t, tracer.traces, testAddress(4)); got != "" {
+		t.Errorf("successful sibling error = %q, want empty", got)
+	}
+	if got := findTraceError(t, tracer.errorTraces, testAddress(3)); got != "parent call failed" {
+		t.Errorf("failed descendant error = %q, want parent call failed", got)
+	}
+}
+
+func TestAllSuccessNoErrorTraces(t *testing.T) {
+	child := callFrame{
+		Type: vm.CALL,
+		To:   testAddress(2),
+		Logs: []dtypes.Event{{Address: "0x02", LogIndex: 1}},
+	}
+	root := callFrame{Type: vm.CALL, To: testAddress(1), Calls: []callFrame{child}}
+
+	tracer := NewCallTracer(&tracers.Context{TxHash: common.HexToHash("0x3")})
+	tracer.callstack = []callFrame{root}
+	tracer.CaptureTxEnd(0)
+
+	if len(tracer.traces) != 2 || len(tracer.errorTraces) != 0 {
+		t.Fatalf(
+			"traces/error_traces = %d/%d, want 2/0",
+			len(tracer.traces),
+			len(tracer.errorTraces),
+		)
+	}
+	if len(tracer.logs) != 1 || len(tracer.errorLogs) != 0 {
+		t.Fatalf(
+			"events/error_events = %d/%d, want 1/0",
+			len(tracer.logs),
+			len(tracer.errorLogs),
+		)
+	}
+}
+
+func findTraceError(t *testing.T, traces []dtypes.Trace, address *common.Address) string {
+	t.Helper()
+	want := strings.ToLower(address.Hex())
+	for _, trace := range traces {
+		if trace.To == want {
+			return trace.Error
+		}
+	}
+	t.Fatalf("trace to %s not found", want)
+	return ""
+}
