@@ -10,10 +10,6 @@ import (
 	"strings"
 	"time"
 
-	dtypes "github.com/evmos/ethermint/debank/types"
-	"github.com/evmos/ethermint/debank/util"
-	"github.com/evmos/ethermint/x/evm/statedb"
-	"github.com/evmos/ethermint/x/evm/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -22,6 +18,10 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers"
+	dtypes "github.com/evmos/ethermint/debank/types"
+	"github.com/evmos/ethermint/debank/util"
+	"github.com/evmos/ethermint/x/evm/statedb"
+	"github.com/evmos/ethermint/x/evm/types"
 	"github.com/holiman/uint256"
 )
 
@@ -119,6 +119,8 @@ func (t *CallTracer) ToTrace(f *callFrame, traceAddress []int64) dtypes.Trace {
 		if f.RevertReason != "" {
 			err = fmt.Sprintf("%s: %s", f.Error, f.RevertReason)
 		}
+	} else if f.ParentFailed {
+		err = "parent call failed"
 	}
 	return dtypes.Trace{
 		ID:                f.TraceID,
@@ -320,7 +322,7 @@ func (t *CallTracer) addTraceAndLog(cf *callFrame, traceAddress []int64) {
 		}
 	}
 	for i := range cf.Calls {
-		if cf.Calls[i].failed() {
+		if cf.Calls[i].failed() || cf.Calls[i].ParentFailed {
 			t.errorTraces = append(t.errorTraces, t.ToTrace(&cf.Calls[i], childTraceAddress(traceAddress, int64(i))))
 		} else {
 			t.traces = append(t.traces, t.ToTrace(&cf.Calls[i], childTraceAddress(traceAddress, int64(i))))
