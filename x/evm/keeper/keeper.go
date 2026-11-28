@@ -67,7 +67,8 @@ type Keeper struct {
 	eip155ChainID *big.Int
 
 	// Tracer used to collect execution traces from the EVM transaction execution
-	tracer string
+	tracer            string
+	transactionTracer func(common.Hash) vm.EVMLogger
 
 	// EVM Hooks for tx post-processing
 	hooks types.EvmHooks

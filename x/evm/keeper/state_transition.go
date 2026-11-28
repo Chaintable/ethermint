@@ -130,6 +130,12 @@ func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
 	}
 }
 
+// SetTransactionTracer attaches an observer to signed messages on a private replay
+// keeper. Native ApplyMessage calls and gas estimation keep their own tracer.
+func (k *Keeper) SetTransactionTracer(factory func(common.Hash) vm.EVMLogger) {
+	k.transactionTracer = factory
+}
+
 // ApplyTransaction runs and attempts to perform a state transition with the given transaction (i.e Message), that will
 // only be persisted (committed) to the underlying KVStore if the transaction does not fail.
 //
@@ -178,7 +184,11 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, tx *ethtypes.Transaction) (*t
 	}
 
 	// pass true to commit the StateDB
-	res, err := k.ApplyMessageWithConfig(tmpCtx, msg, nil, true, cfg, txConfig)
+	var observer vm.EVMLogger
+	if k.transactionTracer != nil {
+		observer = k.transactionTracer(tx.Hash())
+	}
+	res, err := k.ApplyMessageWithConfig(tmpCtx, msg, observer, true, cfg, txConfig)
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to apply ethereum core message")
 	}
