@@ -536,6 +536,29 @@ func sortedHashes(m map[common.Hash]struct{}) []common.Hash {
 	return out
 }
 
+// ReplayResult finishes a signed message once DeliverTx has determined whether
+// the writes survived. Logs from nested calls are flattened in VM emission order.
+func (t *CallTracer) ReplayResult(failure string) (dtypes.TraceResult, error) {
+	if len(t.callstack) != 1 {
+		return dtypes.TraceResult{}, fmt.Errorf("expected a completed root call, got %d frames", len(t.callstack))
+	}
+	if failure != "" && !t.callstack[0].failed() {
+		t.callstack[0].Error = failure
+		t.traces, t.logs, t.errorTraces, t.errorLogs = nil, nil, nil, nil
+		t.CaptureTxEnd(0)
+	}
+	logs := t.GetLogs()
+	sort.Slice(logs, func(i, j int) bool { return logs[i].LogIndex < logs[j].LogIndex })
+	return dtypes.TraceResult{
+		Transaction:      t.transaction,
+		Traces:           t.GetTraces(),
+		Events:           logs,
+		ErrorTraces:      t.GetErrorTraces(),
+		ErrorEvents:      t.GetErrorLogs(),
+		StorageContracts: t.GetStorageAddress(),
+	}, nil
+}
+
 func (t *CallTracer) GetResult() (json.RawMessage, error) {
 	result := &dtypes.TraceResult{
 		Transaction:      t.transaction,

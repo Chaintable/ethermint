@@ -11,8 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/holiman/uint256"
 
-	"github.com/evmos/ethermint/rpc/backend"
 	dtypes "github.com/evmos/ethermint/debank/types"
+	"github.com/evmos/ethermint/rpc/backend"
 	rpctypes "github.com/evmos/ethermint/rpc/types"
 )
 
@@ -266,6 +266,16 @@ func reconstructEvmutilDiff(
 	}
 
 	return &diff, affectedAddrs, nil
+}
+
+// ReplayAffectedAddresses returns the existing writer's Cosmos and evmutil
+// event candidates for the blockfile storage_contracts field.
+func ReplayAffectedAddresses(begin, end []abci.Event, results []*abci.ResponseDeliverTx) map[common.Address]struct{} {
+	addrs := extractCosmosAffectedAddressesFromBlock(begin, end, results)
+	for addr := range extractEvmutilAffectedAddresses(results) {
+		addrs[addr] = struct{}{}
+	}
+	return addrs
 }
 
 // extractEvmutilAffectedAddresses returns all addresses involved in evmutil

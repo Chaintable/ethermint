@@ -134,3 +134,39 @@ func findTraceError(t *testing.T, traces []dtypes.Trace, address *common.Address
 	t.Fatalf("trace to %s not found", want)
 	return ""
 }
+
+func TestReplayResultLogOrderAndOuterRollback(t *testing.T) {
+	hash := common.HexToHash("0x1234")
+	tr := NewCallTracer(&tracers.Context{TxHash: hash})
+	tr.callstack = []callFrame{{
+		Type: vm.CALL,
+		Logs: []dtypes.Event{{Position: 0, LogIndex: 10}, {Position: 2, LogIndex: 12}},
+		Calls: []callFrame{{
+			Type:             vm.CALL,
+			PosInParentTrace: 1,
+			Logs:             []dtypes.Event{{LogIndex: 11}},
+		}},
+	}}
+	tr.CaptureTxEnd(0)
+	ok, err := tr.ReplayResult("")
+	if err != nil || len(ok.Events) != 3 {
+		t.Fatalf("success logs: %v, %v", ok.Events, err)
+	}
+	for i, l := range ok.Events {
+		if l.LogIndex != int64(i+10) {
+			t.Errorf("log[%d] index %d", i, l.LogIndex)
+		}
+	}
+	failed, err := tr.ReplayResult("exceeds block gas limit")
+	if err != nil || len(failed.Traces) != 0 || len(failed.Events) != 0 || len(failed.ErrorEvents) != 3 || len(failed.ErrorTraces) != 2 {
+		t.Fatalf("outer rollback: %+v, %v", failed, err)
+	}
+	if failed.ErrorTraces[0].Error != "exceeds block gas limit" || failed.ErrorTraces[1].Error != "parent call failed" {
+		t.Fatalf("errors: %+v", failed.ErrorTraces)
+	}
+	for _, l := range failed.ErrorEvents {
+		if l.LogIndex != 0 {
+			t.Fatalf("rolled-back log has index %d", l.LogIndex)
+		}
+	}
+}
